@@ -51,6 +51,9 @@ function registries() {
       device("server-1", "vbr01", "Backup & Replication Server"),
       device("license-1", "Veeam License (vbr01)", "License"),
       device("cluster-1", "VBR-HA (vbr01)", "High Availability Cluster"),
+      device("proxy-1", "VMware Backup Proxy", "Backup Proxy"),
+      device("proxy-2", "Backup Proxy", "Backup Proxy"),
+      device("wan-1", "WAN Accelerator 01", "WAN Accelerator"),
     ],
     entities: [
       entity("sensor.nightly_vms_last_result", "job-1"),
@@ -66,6 +69,12 @@ function registries() {
       entity("sensor.veeam_license_vbr01_expiration_date", "license-1"),
       entity("binary_sensor.vbr_ha_vbr01_online", "cluster-1"),
       entity("binary_sensor.vbr_ha_vbr01_failover_in_progress", "cluster-1"),
+      entity("binary_sensor.vmware_backup_proxy_online", "proxy-1"),
+      entity("binary_sensor.vmware_backup_proxy_enabled", "proxy-1"),
+      entity("sensor.vmware_backup_proxy_type", "proxy-1", { entity_category: "diagnostic" }),
+      entity("button.vmware_backup_proxy_disable", "proxy-1", { entity_category: "config" }),
+      entity("binary_sensor.backup_proxy_online", "proxy-2"),
+      entity("sensor.wan_accelerator_01_cache_size", "wan-1"),
     ],
   };
 }
@@ -103,10 +112,44 @@ test("repositories and scale-out repositories share a view", () => {
   assert.deepEqual(sectionTitles(sections), ["Default Backup Repository", "Main SOBR"]);
 });
 
-test("infrastructure covers cluster, server and license", () => {
+test("infrastructure covers cluster, proxies, accelerators, server and license", () => {
   const sections = buildSections("infrastructure", registries(), {});
 
-  assert.deepEqual(sectionTitles(sections), ["VBR-HA (vbr01)", "vbr01", "Veeam License (vbr01)"]);
+  assert.deepEqual(sectionTitles(sections), [
+    "VBR-HA (vbr01)",
+    "Backup Proxy",
+    "VMware Backup Proxy",
+    "WAN Accelerator 01",
+    "vbr01",
+    "Veeam License (vbr01)",
+  ]);
+});
+
+test("the overview gives proxies and accelerators their own sections", () => {
+  const titles = sectionTitles(buildSections("overview", registries(), {}));
+
+  assert.ok(titles.includes("Backup proxies"), `got ${JSON.stringify(titles)}`);
+  assert.ok(titles.includes("WAN accelerators"), `got ${JSON.stringify(titles)}`);
+});
+
+test("the overview leads a proxy with its Online sensor", () => {
+  const sections = buildSections("overview", registries(), {});
+  const proxies = sections.find((s) => s.cards[0].heading === "Backup proxies");
+  const ids = proxies.cards.filter((c) => c.entity).map((c) => c.entity);
+
+  assert.equal(ids[0], "binary_sensor.backup_proxy_online", "online is what matters at a glance");
+});
+
+test("proxy buttons appear on the proxy device, not the overview", () => {
+  const jobsView = buildSections("infrastructure", registries(), {});
+  const proxySection = jobsView.find((s) => s.cards[0].heading === "VMware Backup Proxy");
+  const ids = proxySection.cards.filter((c) => c.entity).map((c) => c.entity);
+
+  assert.ok(ids.includes("button.vmware_backup_proxy_disable"));
+
+  const overview = buildSections("overview", registries(), {});
+  const overviewIds = overview.flatMap((s) => s.cards.filter((c) => c.entity).map((c) => c.entity));
+  assert.ok(!overviewIds.includes("button.vmware_backup_proxy_disable"));
 });
 
 test("diagnostic entities are left out by default", () => {

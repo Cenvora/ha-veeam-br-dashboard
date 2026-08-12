@@ -16,7 +16,8 @@
  *
  * Options (all optional):
  *   group                 Only for the view strategy: overview | jobs | repositories |
- *                         infrastructure. Defaults to overview.
+ *                         infrastructure (which covers the HA cluster, proxies, WAN
+ *                         accelerators, servers and licensing). Defaults to overview.
  *   include_diagnostics   Include diagnostic entities. Default false, since they are mostly
  *                         build numbers and IDs.
  *   include_config        Include config-category entities. Default true — the job start and
@@ -34,6 +35,8 @@ const MODEL = {
   JOB: "Backup Job",
   REPOSITORY: "Backup Repository",
   SOBR: "Scale-Out Backup Repository",
+  PROXY: "Backup Proxy",
+  WAN: "WAN Accelerator",
   SERVER: "Backup & Replication Server",
   LICENSE: "License",
   CLUSTER: "High Availability Cluster",
@@ -53,6 +56,8 @@ const OVERVIEW_SUFFIXES = {
   [MODEL.JOB]: ["_last_result", "_status"],
   [MODEL.REPOSITORY]: ["_used_percentage", "_online"],
   [MODEL.SOBR]: ["_extent_count"],
+  [MODEL.PROXY]: ["_online", "_enabled"],
+  [MODEL.WAN]: ["_cache_size"],
   [MODEL.SERVER]: ["_connected", "_health", "_name"],
   [MODEL.LICENSE]: ["_status", "_expiration_date"],
   [MODEL.CLUSTER]: ["_online", "_failover_in_progress"],
@@ -194,11 +199,22 @@ function pickOverviewEntities(device, entities) {
 function overviewSections(groups, byDevice, labels, multiServer, opts) {
   const sections = [];
 
-  const order = [MODEL.JOB, MODEL.REPOSITORY, MODEL.SOBR, MODEL.CLUSTER, MODEL.SERVER, MODEL.LICENSE];
+  const order = [
+    MODEL.JOB,
+    MODEL.REPOSITORY,
+    MODEL.SOBR,
+    MODEL.PROXY,
+    MODEL.WAN,
+    MODEL.CLUSTER,
+    MODEL.SERVER,
+    MODEL.LICENSE,
+  ];
   const titles = {
     [MODEL.JOB]: "Backup jobs",
     [MODEL.REPOSITORY]: "Repositories",
     [MODEL.SOBR]: "Scale-out repositories",
+    [MODEL.PROXY]: "Backup proxies",
+    [MODEL.WAN]: "WAN accelerators",
     [MODEL.CLUSTER]: "High availability",
     [MODEL.SERVER]: "Servers",
     [MODEL.LICENSE]: "Licensing",
@@ -281,6 +297,8 @@ export function buildSections(group, registries, config) {
       return deviceSections(
         [
           ...(groups.get(MODEL.CLUSTER) || []),
+          ...(groups.get(MODEL.PROXY) || []),
+          ...(groups.get(MODEL.WAN) || []),
           ...(groups.get(MODEL.SERVER) || []),
           ...(groups.get(MODEL.LICENSE) || []),
         ],

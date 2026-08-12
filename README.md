@@ -73,10 +73,10 @@ That's the entire configuration. You get four views:
 
 | View | Contents |
 | ---- | -------- |
-| **Overview** | A compact tile per job, repository, cluster, server and license |
+| **Overview** | A compact tile per job, repository, proxy, accelerator, cluster, server and license |
 | **Jobs** | A section per backup job with its sensors and start/stop/retry buttons |
 | **Repositories** | A section per repository and scale-out repository |
-| **Infrastructure** | HA cluster, server details and licensing |
+| **Infrastructure** | HA cluster, backup proxies, WAN accelerators, server details and licensing |
 
 Views with nothing to show are left out, so a server with no scale-out repositories does not
 get an empty tab.
@@ -121,8 +121,8 @@ configured, section titles are suffixed with the server name — so two jobs bot
 
 The strategy asks Home Assistant for the device and entity registries, keeps entities whose
 platform is `veeam_br`, and groups their devices by model — `Backup Job`,
-`Backup Repository`, `Scale-Out Backup Repository`, `Backup & Replication Server`, `License`,
-`High Availability Cluster`.
+`Backup Repository`, `Scale-Out Backup Repository`, `Backup Proxy`, `WAN Accelerator`,
+`Backup & Replication Server`, `License`, `High Availability Cluster`.
 
 Working from the registry rather than matching entity IDs means renaming an entity or a device
 does not break the dashboard, and disabled entities are never given a tile that would render
