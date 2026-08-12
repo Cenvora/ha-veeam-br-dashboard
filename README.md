@@ -27,18 +27,31 @@ sponsored by Veeam Software.
 
 ## Installation
 
-### HACS
+### HACS (recommended)
 
-This is not yet in the default HACS store, so add it as a custom repository:
+Have [HACS](https://hacs.xyz/) installed, then use this button:
 
-1. HACS → ⋮ → **Custom repositories**
-2. Repository: `https://github.com/Cenvora/ha-veeam-br-dashboard`, Category: **Dashboard**
-3. Install, then reload the browser
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Cenvora&repository=ha-veeam-br-dashboard&category=plugin)
 
-HACS registers the resource for you. If you installed manually instead, copy
-`veeam-br-dashboard.js` into `<config>/www/` and add it under
-**Settings → Dashboards → ⋮ → Resources** as `/local/veeam-br-dashboard.js`, type
-**JavaScript module**.
+Click **Download**, then reload your browser.
+
+> [!NOTE]
+> This is not in the default HACS store yet. If the button above doesn't work, add
+> `https://github.com/Cenvora/ha-veeam-br-dashboard` as a custom repository of type
+> **Dashboard** in HACS → ⋮ → **Custom repositories**, then download it from there.
+
+HACS registers the dashboard resource for you, so there is nothing to add by hand.
+
+<details><summary>Manual install</summary>
+
+1. Copy `veeam-br-dashboard.js` from the
+   [latest release](https://github.com/Cenvora/ha-veeam-br-dashboard/releases/latest) into
+   `<config>/www/`
+2. Add it under **Settings → Dashboards → ⋮ → Resources** as `/local/veeam-br-dashboard.js`,
+   type **JavaScript module**
+3. Reload your browser
+
+</details>
 
 ## Usage
 
