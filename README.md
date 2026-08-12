@@ -39,6 +39,10 @@ Click **Download**, then reload your browser.
 > This is not in the default HACS store yet. If the button above doesn't work, add
 > `https://github.com/Cenvora/ha-veeam-br-dashboard` as a custom repository of type
 > **Dashboard** in HACS → ⋮ → **Custom repositories**, then download it from there.
+>
+> The type is called **Dashboard** in the HACS interface but `plugin` everywhere machine
+> readable — the install button above, `hacs.json`, and the CI workflow all use `plugin`.
+> HACS maps the two (`common.type.plugin` = "Dashboard"); they are not different categories.
 
 HACS registers the dashboard resource for you, so there is nothing to add by hand.
 

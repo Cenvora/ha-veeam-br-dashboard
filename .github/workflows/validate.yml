@@ -17,6 +17,7 @@ jobs:
       - name: HACS validation
         uses: hacs/action@main
         with:
+          # "plugin" is the machine-readable name of the category HACS shows as "Dashboard"
           category: plugin
 
   test:
