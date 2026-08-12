@@ -1,0 +1,6 @@
+{
+  "name": "Veeam Backup & Replication Dashboard",
+  "filename": "veeam-br-dashboard.js",
+  "render_readme": true,
+  "homeassistant": "2026.1.0"
+}
