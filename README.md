@@ -83,6 +83,11 @@ get an empty tab.
 
 ### A single view in an existing dashboard
 
+Two editors take two different shapes, and pasting one into the other is the usual cause of an
+empty view.
+
+**Dashboard ⋮ → Raw configuration editor** — the whole dashboard, so views are a list:
+
 ```yaml
 views:
   - strategy:
@@ -90,21 +95,46 @@ views:
       group: jobs
       title: Backups
       icon: mdi:shield-check
+      theme: midnight
+  - title: Something else of your own
+    cards: []
+```
+
+**A single view → Edit view → ⋮ → Edit in YAML** — one view, so there is no `views:` key and no
+`type:`/`sections:` of your own:
+
+```yaml
+strategy:
+  type: custom:veeam-br
+  group: jobs
+  title: Backups
+  icon: mdi:shield-check
+  theme: midnight
 ```
 
 `group` accepts `overview`, `jobs`, `repositories` or `infrastructure`.
 
 > [!IMPORTANT]
-> Set the view's **`title` inside the `strategy:` block**, as above — not beside it.
+> Set the view's **name, icon and theme inside the `strategy:` block**, as above — not beside it,
+> and not in the visual editor.
 >
 > Home Assistant applies a strategy's generated configuration *over* the view's own keys, so a
-> `title:` next to `strategy:` is ignored and the tab reads *Unnamed view*. And renaming the
-> view in the visual editor replaces the strategy with a static copy of the cards it happened
-> to generate — the dashboard stops updating itself. That is how strategies work in Home
-> Assistant generally, not something specific to this one.
+> `title:` next to `strategy:` is ignored and the tab reads *Unnamed view*. And using the visual
+> editor to rename or restyle the view replaces the strategy with a static copy of the cards it
+> happened to generate that moment — the dashboard stops updating itself. That is how strategies
+> work in Home Assistant generally, not something specific to this one.
 >
-> To rename or restyle a strategy view, edit the strategy config: ⋮ → **Raw configuration
-> editor**.
+> `title`, `path`, `icon`, `theme`, `background`, `subview` and `visible` are accepted directly.
+> Anything else Home Assistant supports on a view goes under `view:`, which is passed through
+> untouched:
+>
+> ```yaml
+> strategy:
+>   type: custom:veeam-br
+>   view:
+>     theme: midnight
+>     top_margin: true
+> ```
 
 ### Options
 
@@ -112,7 +142,9 @@ All optional, and valid on either the dashboard or a view strategy:
 
 | Option | Default | What it does |
 | ------ | ------- | ------------ |
-| `title`, `icon`, `path` | per view | Name a generated view. Ignored by the whole-dashboard strategy, which names its own views |
+| `title`, `icon`, `path` | per view | Name a generated view. The whole-dashboard strategy names its own four views, so it ignores these |
+| `theme`, `background`, `subview`, `visible` | — | Standard view settings. On the dashboard strategy they apply to every view |
+| `view` | — | Any other view setting, passed through verbatim |
 | `summary` | `true` | The live headline counting failed jobs and full repositories |
 | `badges` | `true` | Show server, cluster and licence state as badges instead of tiles |
 | `columns` | `3` | Maximum section columns |

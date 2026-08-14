@@ -20,10 +20,13 @@
  *                         infrastructure (which covers the HA cluster, proxies, WAN
  *                         accelerators, servers and licensing). Defaults to overview.
  *   title, icon, path     Name the generated view. A view strategy has to supply these
- *                         itself: Home Assistant applies the generated config over the view's
- *                         own keys, so a title set beside `strategy:` is ignored, and renaming
+ *   theme, background     itself: Home Assistant applies the generated config over the view's
+ *   subview, visible      own keys, so a title set beside `strategy:` is ignored, and renaming
  *                         a strategy view in the visual editor replaces the strategy with
  *                         static cards. Set them here instead.
+ *   view                   Any other view setting, passed through verbatim:
+ *                            view:
+ *                              theme: my-theme
  *   summary               Live headline counting failed jobs and full repositories.
  *                         Default true.
  *   badges                Server, cluster and license state as badges along the top of the
@@ -538,6 +541,45 @@ export function buildSections(group, registries, config) {
 }
 
 /**
+ * View settings the strategy config can carry.
+ *
+ * Everything the view editor would normally set has to be settable here instead: Home Assistant
+ * applies the generated config over the view's own keys, and renaming or restyling a strategy
+ * view in the visual editor replaces the strategy with static cards.
+ */
+const VIEW_SETTINGS = [
+  "title",
+  "path",
+  "icon",
+  "theme",
+  "background",
+  "subview",
+  "visible",
+  "max_columns",
+  "dense_section_placement",
+  "header",
+  "top_margin",
+];
+
+/**
+ * Whatever the config asks to put on the view.
+ *
+ * `view:` is a verbatim escape hatch, so a key Home Assistant adds later needs no change here.
+ * `type`, `sections`, `badges` and `cards` are ours to decide and are not accepted.
+ */
+function viewSettings(opts) {
+  const settings = {};
+  for (const key of VIEW_SETTINGS) {
+    if (opts[key] !== undefined) settings[key] = opts[key];
+  }
+
+  const verbatim = { ...(opts.view || {}) };
+  for (const key of ["type", "sections", "badges", "cards", "strategy"]) delete verbatim[key];
+
+  return { ...settings, ...verbatim };
+}
+
+/**
  * Build one view. Exported for tests.
  *
  * Titles come from the strategy config rather than the view, because Home Assistant applies a
@@ -550,12 +592,13 @@ export function buildView(group, registries, config) {
 
   const defaults = GROUP_VIEW[group] || GROUP_VIEW.overview;
   const view = {
-    title: opts.title || defaults.title,
-    path: opts.path || defaults.path,
-    icon: opts.icon || defaults.icon,
-    type: "sections",
+    title: defaults.title,
+    path: defaults.path,
+    icon: defaults.icon,
     max_columns: opts.columns,
     dense_section_placement: true,
+    ...viewSettings(opts),
+    type: "sections",
     sections,
   };
 
@@ -573,12 +616,17 @@ export function buildDashboard(registries, config) {
   const opts = options(config);
   const views = [];
 
+  // One name cannot serve four views, and one path certainly cannot, so a dashboard keeps its
+  // per-group names. Every other view setting — theme, background — applies to all of them.
+  const { title, path, icon, view: perView, ...rest } = config || {};
+  const shared = { ...(perView || {}) };
+  for (const key of ["title", "path", "icon"]) delete shared[key];
+  const viewConfig = { ...rest, view: shared };
+
   for (const group of GROUPS) {
-    // A view strategy is given one title; a dashboard keeps the per-group defaults
-    const viewConfig = { ...(config || {}), title: undefined, path: undefined, icon: undefined };
-    const view = buildView(group, registries, viewConfig);
+    const generated = buildView(group, registries, viewConfig);
     // Skip a view with nothing in it rather than showing an empty tab
-    if (view) views.push(view);
+    if (generated) views.push(generated);
   }
 
   if (!views.length) return { views: [emptyView(opts)] };

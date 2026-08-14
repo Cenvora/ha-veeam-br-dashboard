@@ -142,6 +142,55 @@ test("a dashboard keeps its per-view names even when a title is configured", () 
   );
 });
 
+test("the theme can be set in the strategy config", () => {
+  // The view editor is where you would normally pick a theme, and using it drops the strategy
+  const view = buildView("jobs", registries(), { theme: "midnight" });
+
+  assert.equal(view.theme, "midnight");
+});
+
+test("other view settings pass through too", () => {
+  const view = buildView("jobs", registries(), {
+    background: "var(--blue)",
+    subview: true,
+    visible: [{ user: "abc" }],
+  });
+
+  assert.equal(view.background, "var(--blue)");
+  assert.equal(view.subview, true);
+  assert.deepEqual(view.visible, [{ user: "abc" }]);
+});
+
+test("a view: block reaches the view verbatim, for anything not listed", () => {
+  const view = buildView("jobs", registries(), { view: { theme: "midnight", top_margin: true } });
+
+  assert.equal(view.theme, "midnight");
+  assert.equal(view.top_margin, true);
+});
+
+test("a view: block cannot replace the generated content", () => {
+  const view = buildView("jobs", registries(), {
+    view: { type: "masonry", sections: [], badges: [], cards: [] },
+  });
+
+  assert.equal(view.type, "sections");
+  assert.ok(view.sections.length, "the strategy decides what is on the view");
+});
+
+test("a theme on the dashboard strategy reaches every view", () => {
+  const dashboard = buildDashboard(registries(), { theme: "midnight" });
+
+  assert.ok(dashboard.views.every((v) => v.theme === "midnight"));
+});
+
+test("a dashboard keeps its own view names and paths", () => {
+  // Four views cannot share one title, and two views cannot share one path
+  const dashboard = buildDashboard(registries(), { title: "Backups", path: "backups" });
+
+  assert.equal(new Set(dashboard.views.map((v) => v.path)).size, dashboard.views.length);
+  assert.ok(!dashboard.views.some((v) => v.title === "Backups"));
+});
+
 test("builds a view per group", () => {
   const dashboard = buildDashboard(registries(), {});
 
