@@ -33,7 +33,8 @@
  *                         overview instead of tiles. Default true.
  *   columns               Maximum section columns. Default 3.
  *   include_diagnostics   Include diagnostic entities. Default false, since they are mostly
- *                         build numbers and IDs.
+ *                         build numbers and IDs. The server's Connected and Health OK are
+ *                         shown regardless.
  *   include_config        Include config-category entities. Default true — the job start and
  *                         stop buttons live here.
  *   include_hidden        Include entities the user hid. Default false: hiding something and
@@ -66,6 +67,27 @@ const MODEL_DISPLAY = [
   [MODEL.SERVER, "Servers", "mdi:server"],
   [MODEL.LICENSE, "Licensing", "mdi:certificate"],
 ];
+
+/**
+ * The kind word the integration puts after "VBR " in a device name — "VBR Job Nightly VMs".
+ *
+ * A section already headed "Backup jobs" does not need to say "VBR Job" on every title.
+ */
+const MODEL_KIND = {
+  [MODEL.JOB]: "Job",
+  [MODEL.REPOSITORY]: "Repository",
+  [MODEL.SOBR]: "SOBR",
+  [MODEL.PROXY]: "Proxy",
+  [MODEL.WAN]: "WAN Accelerator",
+  [MODEL.SERVER]: "Server",
+  [MODEL.LICENSE]: "License",
+  [MODEL.CLUSTER]: "HA Cluster",
+};
+
+const DEVICE_NAME_PREFIX = "VBR ";
+
+/** Models whose name is the server's, so without the kind it would be mistaken for the server. */
+const KEEP_KIND = new Set([MODEL.LICENSE, MODEL.CLUSTER]);
 
 const MODEL_ICON = new Map(MODEL_DISPLAY.map(([model, , icon]) => [model, icon]));
 const MODEL_TITLE = new Map(MODEL_DISPLAY.map(([model, title]) => [model, title]));
@@ -114,14 +136,27 @@ const PRIMARY_SUFFIXES = {
 /** Entities promoted to badges, most important first. */
 const BADGE_SUFFIXES = {
   [MODEL.CLUSTER]: ["_online", "_failover_in_progress"],
-  [MODEL.SERVER]: ["_connected"],
+  [MODEL.SERVER]: ["_connected", "_health_ok"],
   [MODEL.LICENSE]: ["_status", "_expiration_date"],
+};
+
+/**
+ * Diagnostic entities shown even with include_diagnostics off.
+ *
+ * The integration files every server entity under diagnostics, Connected and Health OK
+ * included — but whether the server answers is the first thing anyone wants to know, and
+ * without them the server device has nothing on the dashboard at all.
+ */
+const ALWAYS_SHOWN_SUFFIXES = {
+  [MODEL.SERVER]: ["_connected", "_health_ok"],
 };
 
 /** Within a device section, states read best in this order. */
 const ENTITY_ORDER = [
   "_status",
   "_last_result",
+  "_connected",
+  "_health_ok",
   "_online",
   "_enabled",
   "_out_of_date",
@@ -137,8 +172,70 @@ function options(config) {
   return { ...DEFAULTS, ...(config || {}) };
 }
 
+function slugify(text) {
+  return (text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+/**
+ * A device's name without the integration's "VBR <kind> " lead-in.
+ *
+ * Devices are named "VBR Job Nightly VMs" or "VBR Default Backup Repository" (the kind is left
+ * out when the name already says it); earlier releases used the bare name. Under a heading of
+ * "Backup jobs" the title should read "Nightly VMs" either way. A name the user gave the device
+ * is theirs and is used as it is.
+ *
+ * The kind stays where dropping it would say less: a license and a cluster are named after the
+ * server, so "vbr01" would read as the server itself, and "VBR WAN Accelerator 01" could have
+ * come from an accelerator called "WAN Accelerator 01" — "01" alone names nothing.
+ */
 function deviceName(device) {
-  return device.name_by_user || device.name || "Unnamed";
+  if (device.name_by_user) return device.name_by_user;
+
+  const name = device.name || "";
+  if (!name) return "Unnamed";
+  if (!name.startsWith(DEVICE_NAME_PREFIX)) return name;
+
+  const rest = name.slice(DEVICE_NAME_PREFIX.length).trim();
+  if (!rest) return name;
+
+  const kind = MODEL_KIND[device.model];
+  if (!kind || KEEP_KIND.has(device.model)) return rest;
+  if (!rest.toLowerCase().startsWith(`${kind.toLowerCase()} `)) return rest;
+
+  const bare = rest.slice(kind.length).trim();
+  return /[a-z]/i.test(bare) ? bare : rest;
+}
+
+function objectId(entity) {
+  return (entity.entity_id || "").split(".").slice(1).join(".");
+}
+
+/**
+ * The object id, and the same without the "_2" Home Assistant appends when an ID is taken.
+ *
+ * binary_sensor.default_backup_repository_immutable_2 is still the Immutable sensor.
+ */
+function objectIdStems(entity) {
+  const id = objectId(entity);
+  const stem = id.replace(/_\d+$/, "");
+  return stem === id ? [id] : [id, stem];
+}
+
+/**
+ * Whether an entity is the one a suffix such as "_last_result" names.
+ *
+ * Entity IDs come in two schemes: an install from before device names were prefixed keeps
+ * sensor.nightly_vms_last_result in the registry, a new one gets
+ * sensor.vbr_job_nightly_vms_last_result. Both end the same way. The entity's own name is
+ * checked too, so a user who renamed the entity ID does not lose the tile.
+ */
+function hasSuffix(entity, suffix) {
+  if (objectIdStems(entity).some((stem) => stem.endsWith(suffix))) return true;
+  const own = slugify(entity.original_name);
+  return own ? `_${own}`.endsWith(suffix) : false;
 }
 
 function byName(a, b) {
@@ -156,10 +253,15 @@ function entityName(entity, device) {
   const own = entity.name || entity.original_name;
   if (own) return own;
 
-  // No registry name: derive one from the object id, minus the device slug it starts with
-  const objectId = (entity.entity_id || "").split(".").slice(1).join(".");
-  const slug = deviceName(device).toLowerCase().replace(/[^a-z0-9]+/g, "_");
-  const trimmed = objectId.startsWith(`${slug}_`) ? objectId.slice(slug.length + 1) : objectId;
+  // No registry name: derive one from the object id, minus the device slug it starts with —
+  // the full "vbr_job_nightly_vms" of a new install or the bare "nightly_vms" of an older one
+  const [id] = objectIdStems(entity).slice(-1);
+  const slugs = [device.name_by_user, device.name, deviceName(device)]
+    .map(slugify)
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  const slug = slugs.find((candidate) => id.startsWith(`${candidate}_`));
+  const trimmed = slug ? id.slice(slug.length + 1) : id;
 
   return trimmed
     .split("_")
@@ -173,7 +275,7 @@ function isButton(entity) {
 }
 
 function orderRank(entity) {
-  const index = ENTITY_ORDER.findIndex((suffix) => (entity.entity_id || "").endsWith(suffix));
+  const index = ENTITY_ORDER.findIndex((suffix) => hasSuffix(entity, suffix));
   return index === -1 ? ENTITY_ORDER.length : index;
 }
 
@@ -183,14 +285,21 @@ function orderRank(entity) {
  * Filtering on the registry rather than on entity_id patterns means renamed entities are
  * still found, and entities the user disabled or hid stay out of the way.
  */
-function entitiesByDevice(entities, opts) {
+function entitiesByDevice(entities, devices, opts) {
   const byDevice = new Map();
+  const modelOf = new Map(devices.map((device) => [device.id, device.model]));
+  const alwaysShown = (entity) =>
+    (ALWAYS_SHOWN_SUFFIXES[modelOf.get(entity.device_id)] || []).some((suffix) =>
+      hasSuffix(entity, suffix),
+    );
 
   for (const entity of entities) {
     if (entity.platform !== INTEGRATION) continue;
     if (entity.disabled_by) continue;
     if (entity.hidden_by && !opts.include_hidden) continue;
-    if (entity.entity_category === "diagnostic" && !opts.include_diagnostics) continue;
+    if (entity.entity_category === "diagnostic" && !opts.include_diagnostics) {
+      if (!alwaysShown(entity)) continue;
+    }
     if (entity.entity_category === "config" && !opts.include_config) continue;
     if (!entity.device_id) continue;
 
@@ -304,7 +413,7 @@ function gauge(entityId, name, warnAt) {
 
 function findBySuffixes(entities, suffixes) {
   for (const suffix of suffixes || []) {
-    const found = entities.find((entity) => (entity.entity_id || "").endsWith(suffix));
+    const found = entities.find((entity) => hasSuffix(entity, suffix));
     if (found) return found;
   }
   return null;
@@ -331,15 +440,19 @@ function jobSummary(entityIds) {
     "{% set warned = r | select('eq', 'warning') | list | count %}",
     "{% set ok = r | select('eq', 'success') | list | count %}",
     "{% set running = r | select('eq', 'running') | list | count %}",
-    "{% set other = jobs | count - failed - warned - ok - running %}",
+    // A job whose endpoint failed this poll goes unavailable rather than showing stale data
+    "{% set lost = r | select('in', ['unavailable', 'unknown']) | list | count %}",
+    "{% set other = jobs | count - failed - warned - ok - running - lost %}",
     "## {% if failed %}{{ failed }} job{{ 's' if failed > 1 else '' }} failed" +
       "{% elif warned %}{{ warned }} job{{ 's' if warned > 1 else '' }} finished with warnings" +
+      "{% elif lost %}{{ lost }} job{{ 's' if lost > 1 else '' }} unavailable" +
       "{% elif ok %}All {{ ok }} job{{ 's' if ok > 1 else '' }} succeeded" +
       "{% elif running %}{{ running }} job{{ 's' if running > 1 else '' }} running" +
       "{% else %}No job results yet{% endif %}",
     "{{ ok }} succeeded &nbsp;·&nbsp; {{ warned }} with warnings &nbsp;·&nbsp; " +
       "{{ failed }} failed" +
       "{% if running %} &nbsp;·&nbsp; {{ running }} running{% endif %}" +
+      "{% if lost %} &nbsp;·&nbsp; {{ lost }} unavailable{% endif %}" +
       "{% if other %} &nbsp;·&nbsp; {{ other }} with no result{% endif %}",
   ].join("\n");
 }
@@ -348,11 +461,15 @@ function repositorySummary(entityIds, warnAt) {
   return [
     `{% set repos = ${jinjaList(entityIds)} %}`,
     `{% set used = repos | map('states') | map('float', -1) | select('ge', ${warnAt}) | list %}`,
+    // An unavailable repository is not known to be below the threshold, so it is not counted
+    // as though it were
+    "{% set lost = repos | map('states') | map('float', -1) | select('lt', 0) | list | count %}",
     "{% if used | count %}**{{ used | count }}** of {{ repos | count }} " +
       `repositories are at or above ${warnAt}% used.` +
-      "{% else %}" +
-      `All {{ repos | count }} repositories are below ${warnAt}% used.` +
-      "{% endif %}",
+      "{% elif lost < repos | count %}" +
+      `All {{ repos | count - lost }} reporting repositories are below ${warnAt}% used.` +
+      "{% endif %}" +
+      "{% if lost %} **{{ lost }}** {{ 'is' if lost == 1 else 'are' }} unavailable.{% endif %}",
   ].join("\n");
 }
 
@@ -391,7 +508,9 @@ function deviceSections(devices, byDevice, labels, multiServer, opts) {
 
     const cards = entities.map((entity) => {
       const name = entityName(entity, device);
-      if ((entity.entity_id || "").endsWith("_used_percentage")) {
+      // Only a repository's: a license's Instances Used Percentage ends the same way, and
+      // "Used space" on it would be wrong
+      if (device.model === MODEL.REPOSITORY && hasSuffix(entity, "_used_percentage")) {
         // "Used Percentage" beside a gauge marked 0-100 says nothing the gauge does not; a name
         // the user chose themselves is kept as it is
         return gauge(entity.entity_id, entity.name || "Used space", opts.repository_warn_at);
@@ -408,8 +527,36 @@ function deviceSections(devices, byDevice, labels, multiServer, opts) {
     const gauges = cards.filter((card) => card.type === "gauge");
     const rest = cards.filter((card) => card.type !== "gauge");
 
-    return titledSection(title, MODEL_ICON.get(device.model), [...gauges, ...rest]);
+    return titledSection(title, MODEL_ICON.get(device.model), [
+      ...gauges,
+      ...rest,
+      ...failedEndpointsNote(entities),
+    ]);
   });
+}
+
+/**
+ * Which endpoints failed, shown only while Health OK is off.
+ *
+ * Health OK turns off when any endpoint fails in a poll and lists them in its
+ * failed_endpoints attribute; a bare "off" does not say where to look. The visibility
+ * condition is evaluated live, so nothing here is fixed at render time.
+ */
+function failedEndpointsNote(entities) {
+  const health = entities.find(
+    (entity) => entity.entity_id.startsWith("binary_sensor.") && hasSuffix(entity, "_health_ok"),
+  );
+  if (!health) return [];
+
+  const id = health.entity_id;
+  return [
+    markdown(
+      `{% set failed = state_attr('${id}', 'failed_endpoints') or [] %}` +
+        "{% if failed %}**Failing endpoints:** {{ failed | join(', ') }}" +
+        "{% else %}The last poll did not complete.{% endif %}",
+      { visibility: [{ condition: "state", entity: id, state: "off" }] },
+    ),
+  ];
 }
 
 /** One tile per device, named for the device. */
@@ -461,7 +608,7 @@ function overviewBadges(groups, byDevice, labels, multiServer) {
     for (const device of groups.get(model) || []) {
       const entities = byDevice.get(device.id) || [];
       for (const suffix of BADGE_SUFFIXES[model] || []) {
-        const entity = entities.find((candidate) => candidate.entity_id.endsWith(suffix));
+        const entity = entities.find((candidate) => hasSuffix(candidate, suffix));
         if (!entity) continue;
 
         const label = multiServer ? labels.get(entryOf(device)) : null;
@@ -498,7 +645,7 @@ function emptyView(opts) {
 
 /** Everything the layout needs, derived once from the registries. */
 function analyse(registries, opts) {
-  const byDevice = entitiesByDevice(registries.entities || [], opts);
+  const byDevice = entitiesByDevice(registries.entities || [], registries.devices || [], opts);
   const devices = devicesWithEntities(registries.devices || [], byDevice);
 
   return {

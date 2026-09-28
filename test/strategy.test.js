@@ -67,7 +67,16 @@ function registries() {
       entity("sensor.default_backup_repository_used_percentage", "repo-1", "Used Percentage"),
       entity("binary_sensor.default_backup_repository_online", "repo-1", "Online"),
       entity("sensor.main_sobr_extent_count", "sobr-1", "Extent Count"),
-      entity("binary_sensor.vbr01_connected", "server-1", "Connected"),
+      // The integration files every server entity under diagnostics
+      entity("binary_sensor.vbr01_connected", "server-1", "Connected", {
+        entity_category: "diagnostic",
+      }),
+      entity("binary_sensor.vbr01_health_ok", "server-1", "Health OK", {
+        entity_category: "diagnostic",
+      }),
+      entity("sensor.vbr01_build_version", "server-1", "Build Version", {
+        entity_category: "diagnostic",
+      }),
       entity("sensor.veeam_license_vbr01_status", "license-1", "Status"),
       entity("sensor.veeam_license_vbr01_expiration_date", "license-1", "Expiration Date"),
       entity("binary_sensor.vbr_ha_vbr01_online", "cluster-1", "Online"),
@@ -715,4 +724,390 @@ test("nothing generated depends on the current state of an entity", () => {
   for (const key of ['"color"', '"state_color"']) {
     assert.ok(!json.includes(key), `${key} would freeze a live state into the config`);
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Device names and entity ID schemes
+//
+// The integration now names devices "VBR <kind> <name>". Home Assistant renames an existing
+// device but keeps its entities' IDs, so an upgraded install has new device names over the old
+// IDs, and only a new install gets IDs built from the prefixed names. All three must render.
+// ---------------------------------------------------------------------------------------------
+
+/** Device names as the integration now sets them, by device id. */
+const NEW_NAMES = {
+  "job-1": "VBR Job Nightly VMs",
+  "job-2": "VBR Job Weekly Files",
+  "repo-1": "VBR Default Backup Repository",
+  "sobr-1": "VBR Main SOBR",
+  "server-1": "VBR Server vbr01",
+  "license-1": "VBR License vbr01",
+  "cluster-1": "VBR HA Cluster VBR-HA",
+  "proxy-1": "VBR VMware Backup Proxy",
+  "proxy-2": "VBR Backup Proxy",
+  "wan-1": "VBR WAN Accelerator 01",
+};
+
+/** Before the upgrade the IDs stay; after it only the device names change. */
+function upgradedRegistries() {
+  const data = registries();
+  for (const d of data.devices) d.name = NEW_NAMES[d.id];
+  return data;
+}
+
+/** A fresh install: every entity ID is slug(device name) + "_" + slug(entity name). */
+function newRegistries() {
+  const data = upgradedRegistries();
+  const slug = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  const names = new Map(data.devices.map((d) => [d.id, d.name]));
+
+  for (const e of data.entities) {
+    const [domain] = e.entity_id.split(".");
+    e.entity_id = `${domain}.${slug(names.get(e.device_id))}_${slug(e.original_name)}`;
+  }
+  return data;
+}
+
+const SCHEMES = [
+  ["old", registries],
+  ["upgraded", upgradedRegistries],
+  ["new", newRegistries],
+];
+
+test("the new-install fixture produces the IDs Home Assistant would", () => {
+  const ids = newRegistries().entities.map((e) => e.entity_id);
+
+  for (const id of [
+    "sensor.vbr_job_nightly_vms_last_result",
+    "binary_sensor.vbr_default_backup_repository_online",
+    "binary_sensor.vbr_server_vbr01_connected",
+    "sensor.vbr_license_vbr01_status",
+    "binary_sensor.vbr_ha_cluster_vbr_ha_online",
+    "button.vbr_vmware_backup_proxy_disable",
+    "sensor.vbr_wan_accelerator_01_cache_size",
+  ]) {
+    assert.ok(ids.includes(id), `missing ${id}`);
+  }
+});
+
+for (const [scheme, fixture] of SCHEMES) {
+  test(`${scheme} scheme: job and repository titles drop the VBR prefix and kind`, () => {
+    assert.deepEqual(headings(buildSections("jobs", fixture(), {})), [
+      "Nightly VMs",
+      "Weekly Files",
+    ]);
+    assert.deepEqual(headings(buildSections("repositories", fixture(), {})), [
+      "Default Backup Repository",
+      "Main SOBR",
+    ]);
+  });
+
+  test(`${scheme} scheme: the overview picks the same kind of entity for every device`, () => {
+    const data = fixture();
+    const sections = buildSections("overview", data, {});
+    const idOf = (deviceId, name) =>
+      data.entities.find((e) => e.device_id === deviceId && e.original_name === name).entity_id;
+
+    const ids = entityIdsIn(sections);
+    for (const [deviceId, name] of [
+      ["job-1", "Last Result"],
+      ["job-2", "Last Result"],
+      ["repo-1", "Used Percentage"],
+      ["sobr-1", "Extent Count"],
+      ["proxy-1", "Online"],
+      ["proxy-2", "Online"],
+      ["wan-1", "Cache Size"],
+    ]) {
+      assert.ok(ids.includes(idOf(deviceId, name)), `${deviceId} should lead with ${name}`);
+    }
+  });
+
+  test(`${scheme} scheme: overview tiles are named for the device, without the prefix`, () => {
+    const names = entityCards(buildSections("overview", fixture(), {})).map((c) => c.name);
+
+    assert.ok(names.includes("Nightly VMs"), `got ${JSON.stringify(names)}`);
+    assert.ok(names.every((name) => !name.startsWith("VBR ")), `got ${JSON.stringify(names)}`);
+  });
+
+  test(`${scheme} scheme: server, cluster and license badges are found`, () => {
+    const data = fixture();
+    const badges = buildView("overview", data, {}).badges.map((b) => b.entity);
+    const expected = data.entities
+      .filter((e) =>
+        ["Connected", "Health OK", "Online", "Failover In Progress", "Status", "Expiration Date"]
+          .includes(e.original_name),
+      )
+      .filter((e) => ["server-1", "cluster-1", "license-1"].includes(e.device_id))
+      .map((e) => e.entity_id);
+
+    assert.deepEqual([...badges].sort(), [...expected].sort());
+  });
+
+  test(`${scheme} scheme: the summary and the gauge find their entities`, () => {
+    const data = fixture();
+    const used = data.entities.find((e) => e.original_name === "Used Percentage").entity_id;
+    const lastResult = data.entities.find(
+      (e) => e.device_id === "job-1" && e.original_name === "Last Result",
+    ).entity_id;
+
+    const content = markdownIn(buildSections("overview", data, {}))[0];
+    assert.ok(content.includes(used));
+    assert.ok(content.includes(lastResult));
+
+    const repos = buildSections("repositories", data, {});
+    assert.equal(repos[0].cards.find((c) => c.entity === used).type, "gauge");
+  });
+
+  test(`${scheme} scheme: tile names are the entity's own, with or without a registry name`, () => {
+    const data = fixture();
+    for (const e of data.entities) e.original_name = null;
+
+    const section = buildSections("jobs", data, {})[0];
+    const names = section.cards.filter((c) => c.entity).map((c) => c.name);
+
+    assert.deepEqual(names, ["Status", "Last Result", "Last Run", "Start"]);
+  });
+}
+
+test("infrastructure titles on a new install", () => {
+  // License and cluster keep their kind: both are named after the server, and "vbr01" three
+  // times over would not say which is which
+  assert.deepEqual(headings(buildSections("infrastructure", newRegistries(), {})), [
+    "HA Cluster VBR-HA",
+    "Backup Proxy",
+    "VMware Backup Proxy",
+    "WAN Accelerator 01",
+    "vbr01",
+    "License vbr01",
+  ]);
+});
+
+test("the kind is dropped only where it is a lead-in, not part of the name", () => {
+  const data = {
+    devices: [
+      device("proxy-1", "VBR Proxy proxy01", "Backup Proxy"),
+      device("proxy-2", "VBR VMware Backup Proxy", "Backup Proxy"),
+      device("job-1", "VBR Job 5", "Backup Job"),
+      device("wan-1", "VBR WAN Accelerator wan01", "WAN Accelerator"),
+    ],
+    entities: [
+      entity("binary_sensor.vbr_proxy_proxy01_online", "proxy-1", "Online"),
+      entity("binary_sensor.vbr_vmware_backup_proxy_online", "proxy-2", "Online"),
+      entity("sensor.vbr_job_5_status", "job-1", "Status"),
+      entity("sensor.vbr_wan_accelerator_wan01_cache_size", "wan-1", "Cache Size"),
+    ],
+  };
+
+  const titles = headings(buildDashboard(data, {}).views.flatMap((v) => v.sections));
+
+  assert.ok(titles.includes("proxy01"), `got ${JSON.stringify(titles)}`);
+  assert.ok(titles.includes("VMware Backup Proxy"));
+  assert.ok(titles.includes("wan01"));
+  assert.ok(titles.includes("Job 5"), "a bare number is no name");
+});
+
+test("a user-renamed device keeps its name verbatim, prefix and all", () => {
+  const data = newRegistries();
+  data.devices[0].name_by_user = "VBR Job Critical";
+
+  assert.ok(headings(buildSections("jobs", data, {})).includes("VBR Job Critical"));
+});
+
+test("with two servers on a new install, sections name the server without the prefix", () => {
+  const data = newRegistries();
+  data.devices.push(
+    device("server-2", "VBR Server vbr02", "Backup & Replication Server", ENTRY_2),
+    device("job-9", "VBR Job Nightly VMs", "Backup Job", ENTRY_2),
+  );
+  data.entities.push(
+    entity("binary_sensor.vbr_server_vbr02_connected", "server-2", "Connected", {
+      entity_category: "diagnostic",
+    }),
+    entity("sensor.vbr_job_nightly_vms_last_result_2", "job-9", "Last Result"),
+  );
+
+  const titles = headings(buildSections("jobs", data, {}));
+
+  assert.ok(titles.includes("Nightly VMs — vbr01"), `got ${JSON.stringify(titles)}`);
+  assert.ok(titles.includes("Nightly VMs — vbr02"));
+});
+
+// ---------------------------------------------------------------------------------------------
+// Collisions and renamed IDs
+// ---------------------------------------------------------------------------------------------
+
+test("an entity ID with a collision suffix is still recognised", () => {
+  // Seen on a live install: the VB365 integration had a Default Backup Repository device too,
+  // so Home Assistant appended _2 to this integration's IDs
+  const data = {
+    devices: [device("repo-1", "Default Backup Repository", "Backup Repository")],
+    entities: [
+      entity("sensor.default_backup_repository_used_percentage_2", "repo-1", null),
+      entity("binary_sensor.default_backup_repository_online_2", "repo-1", null),
+      entity("binary_sensor.default_backup_repository_immutable_2", "repo-1", null),
+    ],
+  };
+
+  const sections = buildSections("repositories", data, {});
+  const cards = sections[0].cards.filter((c) => c.entity);
+
+  assert.equal(cards[0].type, "gauge");
+  assert.equal(cards[0].entity, "sensor.default_backup_repository_used_percentage_2");
+  assert.deepEqual(
+    cards.slice(1).map((c) => c.name),
+    ["Online", "Immutable"],
+    "the _2 is not part of the name",
+  );
+  assert.match(
+    markdownIn(buildSections("overview", data, {}))[0],
+    /used_percentage_2/,
+    "the summary counts it too",
+  );
+});
+
+test("a collision suffix on a job still leads with Last Result", () => {
+  const data = {
+    devices: [device("job-1", "VBR Job Nightly VMs", "Backup Job")],
+    entities: [
+      entity("sensor.vbr_job_nightly_vms_status_2", "job-1", "Status"),
+      entity("sensor.vbr_job_nightly_vms_last_result_3", "job-1", "Last Result"),
+    ],
+  };
+
+  const jobs = sectionByHeading(buildSections("overview", data, {}), "Backup jobs");
+
+  assert.equal(jobs.cards.find((c) => c.entity).entity, "sensor.vbr_job_nightly_vms_last_result_3");
+});
+
+test("an entity whose ID the user changed is found by its own name", () => {
+  const data = registries();
+  const lastResult = data.entities.find((e) => e.entity_id === "sensor.nightly_vms_last_result");
+  lastResult.entity_id = "sensor.nightly_outcome";
+
+  const jobs = sectionByHeading(buildSections("overview", data, {}), "Backup jobs");
+
+  assert.ok(jobs.cards.some((c) => c.entity === "sensor.nightly_outcome"));
+});
+
+test("IDs from a live upgraded install", () => {
+  // The registry as it was on a real install after the device rename: old IDs, new names
+  const data = {
+    devices: [
+      device("server-1", "VBR Server vbr-vsa-01", "Backup & Replication Server"),
+      device("license-1", "VBR License vbr-vsa-01", "License"),
+      device("repo-1", "VBR Repository Temp Local", "Backup Repository"),
+      device("job-1", "VBR Job Websites", "Backup Job"),
+    ],
+    entities: [
+      entity("binary_sensor.vbr_vsa_01_health_ok", "server-1", "Health OK", {
+        entity_category: "diagnostic",
+      }),
+      entity("binary_sensor.vbr_vsa_01_connected", "server-1", "Connected", {
+        entity_category: "diagnostic",
+      }),
+      entity("sensor.vbr_vsa_01_last_successful_poll", "server-1", "Last Successful Poll", {
+        entity_category: "diagnostic",
+      }),
+      entity(
+        "binary_sensor.veeam_license_vbr_vsa_01_jonah_home_auto_update_enabled",
+        "license-1",
+        "Auto Update Enabled",
+        { entity_category: "diagnostic" },
+      ),
+      entity("sensor.veeam_license_status", "license-1", "Status"),
+      entity("sensor.veeam_license_edition", "license-1", "Edition", {
+        entity_category: "diagnostic",
+      }),
+      entity("sensor.veeam_license_expiration_date", "license-1", "Expiration Date"),
+      entity(
+        "sensor.veeam_license_vbr_vsa_01_jonah_home_instances_used_percentage",
+        "license-1",
+        "Instances Used Percentage",
+      ),
+      entity("sensor.temp_local_repository_capacity", "repo-1", "Capacity"),
+      entity("sensor.websites_last_result", "job-1", "Last Result"),
+      entity("button.websites_start", "job-1", "Start", { entity_category: "config" }),
+    ],
+  };
+
+  const view = buildView("overview", data, {});
+  assert.deepEqual(
+    view.badges.map((b) => b.entity),
+    [
+      "binary_sensor.vbr_vsa_01_connected",
+      "binary_sensor.vbr_vsa_01_health_ok",
+      "sensor.veeam_license_status",
+      "sensor.veeam_license_expiration_date",
+    ],
+  );
+
+  const tiles = entityIdsIn(view.sections);
+  assert.ok(tiles.includes("sensor.websites_last_result"));
+  assert.ok(tiles.includes("sensor.temp_local_repository_capacity"));
+
+  const infra = headings(buildSections("infrastructure", data, {}));
+  assert.deepEqual(infra, ["vbr-vsa-01", "License vbr-vsa-01"]);
+
+  // An instances percentage is not a repository's used space and gets no gauge
+  const license = sectionByHeading(buildSections("infrastructure", data, {}), "License vbr-vsa-01");
+  assert.ok(license.cards.every((c) => c.type !== "gauge"));
+});
+
+// ---------------------------------------------------------------------------------------------
+// Server health
+// ---------------------------------------------------------------------------------------------
+
+test("Connected and Health OK are shown although the integration files them as diagnostics", () => {
+  // Otherwise the server has nothing on the default dashboard, and "is it answering?" is lost
+  const view = buildView("overview", registries(), {});
+  const badges = view.badges.map((b) => b.entity);
+
+  assert.ok(badges.includes("binary_sensor.vbr01_connected"));
+  assert.ok(badges.includes("binary_sensor.vbr01_health_ok"));
+
+  const server = sectionByHeading(buildSections("infrastructure", registries(), {}), "vbr01");
+  const ids = server.cards.filter((c) => c.entity).map((c) => c.entity);
+  assert.deepEqual(ids.slice(0, 2), ["binary_sensor.vbr01_connected", "binary_sensor.vbr01_health_ok"]);
+  assert.ok(!ids.includes("sensor.vbr01_build_version"), "other diagnostics stay out");
+});
+
+test("with badges off, the server tile is Connected", () => {
+  const view = buildView("overview", newRegistries(), { badges: false });
+  const servers = sectionByHeading(view.sections, "Servers");
+
+  assert.equal(servers.cards.find((c) => c.entity).entity, "binary_sensor.vbr_server_vbr01_connected");
+});
+
+test("failing endpoints are listed while Health OK is off", () => {
+  for (const fixture of [registries, newRegistries]) {
+    const data = fixture();
+    const health = data.entities.find((e) => e.original_name === "Health OK").entity_id;
+    const server = buildSections("infrastructure", data, {}).find((s) =>
+      s.cards.some((c) => c.entity === health),
+    );
+    const note = server.cards.find((c) => c.type === "markdown");
+
+    assert.ok(note, "expected a failed-endpoints note");
+    assert.match(note.content, new RegExp(`state_attr\\('${health}', 'failed_endpoints'\\)`));
+    assert.deepEqual(note.visibility, [{ condition: "state", entity: health, state: "off" }]);
+  }
+});
+
+test("no failed-endpoints note without a Health OK sensor", () => {
+  const data = registries();
+  data.entities = data.entities.filter((e) => e.original_name !== "Health OK");
+
+  const sections = buildSections("infrastructure", data, {});
+
+  assert.equal(markdownIn(sections).length, 0);
+});
+
+test("the headline counts unavailable jobs and repositories", () => {
+  // A job or repository whose endpoint failed goes unavailable instead of showing stale data;
+  // "all succeeded" or "all below 85%" would then be claiming something nobody knows
+  const content = markdownIn(buildSections("overview", registries(), {}))[0];
+
+  assert.match(content, /'unavailable'/);
+  assert.match(content, /unavailable\./);
+  assert.match(content, /reporting repositories/);
 });
