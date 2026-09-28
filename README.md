@@ -69,17 +69,61 @@ strategy:
   type: custom:veeam-br
 ```
 
-That's the entire configuration. You get four views:
+That's the entire configuration. You get up to five views:
 
 | View | Contents |
 | ---- | -------- |
-| **Overview** | A live headline, server/cluster/licence badges, and one tile per job, repository, proxy and accelerator |
-| **Jobs** | A section per backup job with its sensors and start/stop/retry buttons |
+| **Overview** | A live headline, server/cluster/security/licence badges, and one tile per job, repository, proxy and accelerator |
+| **Jobs** | A section per backup job with its sensors, its target, and start/stop/retry buttons |
 | **Repositories** | A section per repository and scale-out repository, with used space as a gauge |
+| **Security** | A section per server: malware detection, the Security & Compliance Analyzer, and a button to run it |
 | **Infrastructure** | HA cluster, backup proxies, WAN accelerators, server details and licensing |
 
 Views with nothing to show are left out, so a server with no scale-out repositories does not
-get an empty tab.
+get an empty tab — and a server without the Security device (an older API version, or an
+account without the role to read it) gets no Security tab.
+
+### Security
+
+Integration 0.8.0 adds a **Security** device per server. Its section on the Security view reads
+top to bottom:
+
+```
+Security vbr01
+┌──────────────────────────────────────────────────────────┐
+│ ⚠ Malware detected — 2 infected and 1 suspicious object, │  only while Malware Detected is on
+│   most recently fileserver01, sql02.                     │
+├──────────────────────────────────────────────────────────┤
+│ ⚠ Best practices not followed — MFA, Immutability        │  only while Best Practices is on
+└──────────────────────────────────────────────────────────┘
+[Malware Detected: OK]         [Best Practices: Problem]
+[Infected Objects: 0]          [Suspicious Objects: 0]
+[Best Practice Violations: 2]  [Malware Events (24h): 0]
+[Last Malware Event: 3 days ago]  [Last Analyzer Run: 2 hours ago]
+[Run Security Analyzer]
+```
+
+- **Malware Detected** and **Best Practices** are problem sensors, so their tiles read *Problem*
+  or *OK* and Home Assistant colours them live. While either is on, a banner above the tiles says
+  what is wrong, from the sensor's own attributes: the infected and suspicious counts and the
+  most recently detected objects, or the best practices violated.
+- The two are also **badges** on the overview, beside the server's, and the **headline** raises
+  malware as an error and violations as a warning — *on 1 of 2 servers* when you have several.
+  With nothing wrong it reads *No malware detected, and no best practice violations.*
+- Before API `1.3-rev2` the integration has no detected-object entities, so there is no Malware
+  Detected: the section shows what exists, Best Practices takes its place on the overview, and
+  the headline says nothing about malware rather than claiming there is none.
+- None of these are diagnostic entities, so `include_diagnostics` does not affect them.
+
+### Server and jobs
+
+- The server's section on the Infrastructure view shows **Move/Copy Sessions Awaiting Action**
+  and **Recovery Appliances Connected** after Connected and Health OK. While any move or copy is
+  waiting for a decision, a banner at the top lists the sessions and points at the
+  `veeam_br.manage_move_copy_session` action, and the overview headline mentions it.
+- Every job's section shows its **Target** — where it writes to — after Status and Last Result.
+  The integration files Target under diagnostics; it is shown regardless, like the server's
+  Connected and Health OK, but never takes the job's place on the overview.
 
 ### A single view in an existing dashboard
 
@@ -112,7 +156,7 @@ strategy:
   theme: midnight
 ```
 
-`group` accepts `overview`, `jobs`, `repositories` or `infrastructure`.
+`group` accepts `overview`, `jobs`, `repositories`, `security` or `infrastructure`.
 
 > [!IMPORTANT]
 > Set the view's **name, icon and theme inside the `strategy:` block**, as above — not beside it,
@@ -142,13 +186,13 @@ All optional, and valid on either the dashboard or a view strategy:
 
 | Option | Default | What it does |
 | ------ | ------- | ------------ |
-| `title`, `icon`, `path` | per view | Name a generated view. The whole-dashboard strategy names its own four views, so it ignores these |
+| `title`, `icon`, `path` | per view | Name a generated view. The whole-dashboard strategy names its own views, so it ignores these |
 | `theme`, `background`, `subview`, `visible` | — | Standard view settings. On the dashboard strategy they apply to every view |
 | `view` | — | Any other view setting, passed through verbatim |
-| `summary` | `true` | The live headline counting failed jobs and full repositories |
-| `badges` | `true` | Show server, cluster and licence state as badges instead of tiles |
+| `summary` | `true` | The live headline counting failed jobs and full repositories, and raising malware, best practice violations and move/copy sessions awaiting action |
+| `badges` | `true` | Show server, cluster, security and licence state as badges instead of tiles |
 | `columns` | `3` | Maximum section columns |
-| `include_diagnostics` | `false` | Include diagnostic entities — build numbers, IDs, timelines |
+| `include_diagnostics` | `false` | Include diagnostic entities — build numbers, IDs, timelines. The server's Connected and Health OK and a job's Target are shown either way |
 | `include_config` | `true` | Include config entities. The job start/stop buttons live here |
 | `include_hidden` | `false` | Include entities you have hidden |
 | `repository_warn_at` | `85` | Used-space percentage treated as a warning, in the headline and on the gauges |
@@ -165,14 +209,16 @@ strategy:
 
 Each server is its own config entry, and all of them are picked up. When more than one is
 configured, section titles are suffixed with the server name — so two jobs both called
-`Nightly VMs` on different servers stay distinguishable.
+`Nightly VMs` on different servers stay distinguishable. A device already named after its
+server, such as *Security vbr01* or *License vbr01*, is not suffixed again. Each server gets its
+own Security section and badges, and the headline counts across all of them.
 
 ## How it works
 
 The strategy asks Home Assistant for the device and entity registries, keeps entities whose
 platform is `veeam_br`, and groups their devices by model — `Backup Job`,
 `Backup Repository`, `Scale-Out Backup Repository`, `Backup Proxy`, `WAN Accelerator`,
-`Backup & Replication Server`, `License`, `High Availability Cluster`.
+`Backup & Replication Server`, `License`, `High Availability Cluster`, `Security`.
 
 Working from the registry rather than matching entity IDs means renaming an entity or a device
 does not break the dashboard, and disabled entities are never given a tile that would render
@@ -183,8 +229,8 @@ broken.
 The integration names its devices `VBR <kind> <name>` — *VBR Job Nightly VMs*, *VBR Server
 vbr01*, *VBR Default Backup Repository* (the kind is left out when the name already has it).
 Section and tile titles drop that lead-in, so under *Backup jobs* you read *Nightly VMs*. A
-license and an HA cluster keep their kind (*License vbr01*), since they are named after the
-server, and a name you give a device yourself is shown exactly as you wrote it.
+license, an HA cluster and the Security device keep their kind (*License vbr01*, *Security
+vbr01*), since they are named after the server, and a name you give a device yourself is shown exactly as you wrote it.
 
 Within a device, the strategy recognises an entity by the end of its ID or by its own name, so
 both ID schemes work:
@@ -202,7 +248,8 @@ A few deliberate choices in the layout:
 
 - **One tile per device on the overview**, named for the device — a proxy contributing three
   tiles that all read *veeam-worker-01* tells you nothing about which is which. The rest of a
-  device's entities are on its own section in the Jobs, Repositories or Infrastructure view.
+  device's entities are on its own section in the Jobs, Repositories, Security or
+  Infrastructure view.
 - **Short names inside a device section.** In a section already titled *Nightly VMs*, the tiles
   read *Status*, *Last Result*, *Start* — not the full friendly name repeated four times.
 - **Jobs lead with Last Result, not Status.** Status reports what a job is doing (`Running`,
@@ -210,8 +257,8 @@ A few deliberate choices in the layout:
   Last Result.
 - **Used space is a gauge**, coloured at `repository_warn_at`. A tile reading *0.2%* is a number
   you have to think about; a gauge is not.
-- **Server, cluster and licence state are badges**, because they are one-per-server facts that
-  belong along the top rather than in a section competing with your jobs. The server's
+- **Server, cluster, security and licence state are badges**, because they are one-per-server
+  facts that belong along the top rather than in a section competing with your jobs. The server's
   *Connected* and *Health OK* are shown even with `include_diagnostics` off, although the
   integration files them as diagnostics — otherwise the server would not appear at all.
 - **Failing endpoints are spelled out.** While *Health OK* is off, the server's section lists
@@ -220,7 +267,9 @@ A few deliberate choices in the layout:
   jobs and repositories instead of calling them healthy.
 - **The headline is a template**, not a count baked in at render time. A strategy runs once per
   page load, so anything computed from live states would be a stale snapshot minutes later —
-  that also applies to card order and colour, which is why neither depends on state.
+  that also applies to card order and colour, which is why neither depends on state. The
+  banners for malware, best practices, failing endpoints and waiting move/copy sessions are
+  there all along and shown or hidden by Home Assistant's own visibility conditions.
 
 ## Development
 
@@ -232,8 +281,8 @@ node --test        # or: npm test
 ```
 
 The tests import the module directly and feed it registry fixtures, asserting on the generated
-dashboard configuration — grouping, filtering, multi-server labelling, both entity ID schemes
-and the empty state.
+dashboard configuration — grouping, filtering, multi-server labelling, both entity ID schemes,
+the Security view with and without the Security device, and the empty state.
 
 ## Related
 
