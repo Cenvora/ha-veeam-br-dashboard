@@ -56,6 +56,8 @@ function registries() {
       device("proxy-1", "VMware Backup Proxy", "Backup Proxy"),
       device("proxy-2", "Backup Proxy", "Backup Proxy"),
       device("wan-1", "WAN Accelerator 01", "WAN Accelerator"),
+      // New in integration 0.8.0, so named "VBR <kind> <server>" on every install
+      device("security-1", "VBR Security vbr01", "Security"),
     ],
     entities: [
       entity("sensor.nightly_vms_status", "job-1", "Status"),
@@ -63,7 +65,9 @@ function registries() {
       entity("sensor.nightly_vms_last_run", "job-1", "Last Run"),
       entity("sensor.nightly_vms_type", "job-1", "Type", { entity_category: "diagnostic" }),
       entity("button.nightly_vms_start", "job-1", "Start", { entity_category: "config" }),
+      entity("sensor.nightly_vms_target", "job-1", "Target", { entity_category: "diagnostic" }),
       entity("sensor.weekly_files_last_result", "job-2", "Last Result"),
+      entity("sensor.weekly_files_target", "job-2", "Target", { entity_category: "diagnostic" }),
       entity("sensor.default_backup_repository_used_percentage", "repo-1", "Used Percentage"),
       entity("binary_sensor.default_backup_repository_online", "repo-1", "Online"),
       entity("sensor.main_sobr_extent_count", "sobr-1", "Extent Count"),
@@ -77,6 +81,17 @@ function registries() {
       entity("sensor.vbr01_build_version", "server-1", "Build Version", {
         entity_category: "diagnostic",
       }),
+      // Not diagnostics, unlike the rest of the server's
+      entity(
+        "sensor.vbr01_recovery_appliances_connected",
+        "server-1",
+        "Recovery Appliances Connected",
+      ),
+      entity(
+        "sensor.vbr01_move_copy_sessions_awaiting_action",
+        "server-1",
+        "Move/Copy Sessions Awaiting Action",
+      ),
       entity("sensor.veeam_license_vbr01_status", "license-1", "Status"),
       entity("sensor.veeam_license_vbr01_expiration_date", "license-1", "Expiration Date"),
       entity("binary_sensor.vbr_ha_vbr01_online", "cluster-1", "Online"),
@@ -89,8 +104,32 @@ function registries() {
       }),
       entity("binary_sensor.backup_proxy_online", "proxy-2", "Online"),
       entity("sensor.wan_accelerator_01_cache_size", "wan-1", "Cache Size"),
+      ...securityEntities("vbr_security_vbr01", "security-1"),
     ],
   };
+}
+
+/** The Security device's entities as integration 0.8.0 creates them, none of them diagnostic. */
+function securityEntities(prefix, deviceId) {
+  return [
+    entity(`binary_sensor.${prefix}_malware_detected`, deviceId, "Malware Detected"),
+    entity(`binary_sensor.${prefix}_best_practices`, deviceId, "Best Practices"),
+    entity(`sensor.${prefix}_infected_objects`, deviceId, "Infected Objects"),
+    entity(`sensor.${prefix}_suspicious_objects`, deviceId, "Suspicious Objects"),
+    entity(`sensor.${prefix}_malware_events_24h`, deviceId, "Malware Events (24h)"),
+    entity(`sensor.${prefix}_last_malware_event`, deviceId, "Last Malware Event"),
+    entity(`sensor.${prefix}_best_practice_violations`, deviceId, "Best Practice Violations"),
+    entity(`sensor.${prefix}_last_analyzer_run`, deviceId, "Last Analyzer Run"),
+    entity(`button.${prefix}_run_security_analyzer`, deviceId, "Run Security Analyzer"),
+  ];
+}
+
+/** The same registries from a server without any of the Security device. */
+function withoutSecurity(data = registries()) {
+  const ids = new Set(data.devices.filter((d) => d.model === "Security").map((d) => d.id));
+  data.devices = data.devices.filter((d) => !ids.has(d.id));
+  data.entities = data.entities.filter((e) => !ids.has(e.device_id));
+  return data;
 }
 
 function headings(sections) {
@@ -120,7 +159,7 @@ function markdownIn(sections) {
 test("a generated view names itself", () => {
   // Home Assistant applies the generated config over the view's own keys, so a view strategy
   // that returns no title renders as "Unnamed view"
-  for (const group of ["overview", "jobs", "repositories", "infrastructure"]) {
+  for (const group of ["overview", "jobs", "repositories", "security", "infrastructure"]) {
     const view = buildView(group, registries(), {});
     assert.ok(view.title, `${group} should have a title`);
     assert.ok(view.icon, `${group} should have an icon`);
@@ -147,7 +186,7 @@ test("a dashboard keeps its per-view names even when a title is configured", () 
 
   assert.deepEqual(
     dashboard.views.map((v) => v.title),
-    ["Overview", "Jobs", "Repositories", "Infrastructure"],
+    ["Overview", "Jobs", "Repositories", "Security", "Infrastructure"],
   );
 });
 
@@ -205,7 +244,7 @@ test("builds a view per group", () => {
 
   assert.deepEqual(
     dashboard.views.map((v) => v.path),
-    ["overview", "jobs", "repositories", "infrastructure"],
+    ["overview", "jobs", "repositories", "security", "infrastructure"],
   );
   for (const view of dashboard.views) {
     assert.equal(view.type, "sections", `${view.path} should be a sections view`);
@@ -406,7 +445,7 @@ test("tiles inside a device section use the entity's short name", () => {
   const section = sectionByHeading(buildSections("jobs", registries(), {}), "Nightly VMs");
   const names = section.cards.filter((c) => c.entity).map((c) => c.name);
 
-  assert.deepEqual(names, ["Status", "Last Result", "Last Run", "Start"]);
+  assert.deepEqual(names, ["Status", "Last Result", "Target", "Last Run", "Start"]);
 });
 
 test("a renamed entity keeps the name the user gave it", () => {
@@ -746,6 +785,7 @@ const NEW_NAMES = {
   "proxy-1": "VBR VMware Backup Proxy",
   "proxy-2": "VBR Backup Proxy",
   "wan-1": "VBR WAN Accelerator 01",
+  "security-1": "VBR Security vbr01",
 };
 
 /** Before the upgrade the IDs stay; after it only the device names change. */
@@ -829,15 +869,23 @@ for (const [scheme, fixture] of SCHEMES) {
     assert.ok(names.every((name) => !name.startsWith("VBR ")), `got ${JSON.stringify(names)}`);
   });
 
-  test(`${scheme} scheme: server, cluster and license badges are found`, () => {
+  test(`${scheme} scheme: server, cluster, security and license badges are found`, () => {
     const data = fixture();
     const badges = buildView("overview", data, {}).badges.map((b) => b.entity);
     const expected = data.entities
       .filter((e) =>
-        ["Connected", "Health OK", "Online", "Failover In Progress", "Status", "Expiration Date"]
-          .includes(e.original_name),
+        [
+          "Connected",
+          "Health OK",
+          "Online",
+          "Failover In Progress",
+          "Status",
+          "Expiration Date",
+          "Malware Detected",
+          "Best Practices",
+        ].includes(e.original_name),
       )
-      .filter((e) => ["server-1", "cluster-1", "license-1"].includes(e.device_id))
+      .filter((e) => ["server-1", "cluster-1", "license-1", "security-1"].includes(e.device_id))
       .map((e) => e.entity_id);
 
     assert.deepEqual([...badges].sort(), [...expected].sort());
@@ -865,7 +913,7 @@ for (const [scheme, fixture] of SCHEMES) {
     const section = buildSections("jobs", data, {})[0];
     const names = section.cards.filter((c) => c.entity).map((c) => c.name);
 
-    assert.deepEqual(names, ["Status", "Last Result", "Last Run", "Start"]);
+    assert.deepEqual(names, ["Status", "Last Result", "Target", "Last Run", "Start"]);
   });
 }
 
@@ -1085,7 +1133,9 @@ test("failing endpoints are listed while Health OK is off", () => {
     const server = buildSections("infrastructure", data, {}).find((s) =>
       s.cards.some((c) => c.entity === health),
     );
-    const note = server.cards.find((c) => c.type === "markdown");
+    const note = server.cards.find(
+      (c) => c.type === "markdown" && c.content.includes("failed_endpoints"),
+    );
 
     assert.ok(note, "expected a failed-endpoints note");
     assert.match(note.content, new RegExp(`state_attr\\('${health}', 'failed_endpoints'\\)`));
@@ -1099,7 +1149,7 @@ test("no failed-endpoints note without a Health OK sensor", () => {
 
   const sections = buildSections("infrastructure", data, {});
 
-  assert.equal(markdownIn(sections).length, 0);
+  assert.ok(!markdownIn(sections).some((content) => content.includes("failed_endpoints")));
 });
 
 test("the headline counts unavailable jobs and repositories", () => {
@@ -1110,4 +1160,422 @@ test("the headline counts unavailable jobs and repositories", () => {
   assert.match(content, /'unavailable'/);
   assert.match(content, /unavailable\./);
   assert.match(content, /reporting repositories/);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Security
+// ---------------------------------------------------------------------------------------------
+
+/** A second server with its own Security device. */
+function twoServersWithSecurity() {
+  const data = newRegistries();
+  data.devices.push(
+    device("server-2", "VBR Server vbr02", "Backup & Replication Server", ENTRY_2),
+    device("security-2", "VBR Security vbr02", "Security", ENTRY_2),
+  );
+  data.entities.push(
+    entity("binary_sensor.vbr_server_vbr02_connected", "server-2", "Connected", {
+      entity_category: "diagnostic",
+    }),
+    ...securityEntities("vbr_security_vbr02", "security-2"),
+  );
+  return data;
+}
+
+test("the new-install fixture produces the live Security and server IDs", () => {
+  // As seen on a live 0.8.0 install, with vbr-vsa-01 in place of vbr01
+  const ids = newRegistries().entities.map((e) => e.entity_id);
+
+  for (const id of [
+    "binary_sensor.vbr_security_vbr01_malware_detected",
+    "binary_sensor.vbr_security_vbr01_best_practices",
+    "sensor.vbr_security_vbr01_malware_events_24h",
+    "button.vbr_security_vbr01_run_security_analyzer",
+    "sensor.vbr_server_vbr01_recovery_appliances_connected",
+    "sensor.vbr_server_vbr01_move_copy_sessions_awaiting_action",
+    "sensor.vbr_job_nightly_vms_target",
+  ]) {
+    assert.ok(ids.includes(id), `missing ${id}`);
+  }
+});
+
+for (const [scheme, fixture] of SCHEMES) {
+  test(`${scheme} scheme: a Security section per server, in reading order`, () => {
+    const sections = buildSections("security", fixture(), {});
+
+    assert.deepEqual(headings(sections), ["Security vbr01"], "named after the server, kind kept");
+    const names = sections[0].cards.filter((c) => c.entity).map((c) => c.name);
+    assert.deepEqual(names, [
+      "Malware Detected",
+      "Best Practices",
+      "Infected Objects",
+      "Suspicious Objects",
+      "Best Practice Violations",
+      "Malware Events (24h)",
+      "Last Malware Event",
+      "Last Analyzer Run",
+      "Run Security Analyzer",
+    ]);
+  });
+
+  test(`${scheme} scheme: the headline raises malware, best practices and move/copy`, () => {
+    const data = fixture();
+    const idOf = (name) => data.entities.find((e) => e.original_name === name).entity_id;
+    const content = markdownIn(buildSections("overview", data, {}))[0];
+
+    assert.ok(content.includes(idOf("Malware Detected")));
+    assert.ok(content.includes(idOf("Best Practices")));
+    assert.ok(content.includes(idOf("Move/Copy Sessions Awaiting Action")));
+  });
+
+  test(`${scheme} scheme: a job's Target is found and shown`, () => {
+    const data = fixture();
+    const target = data.entities.find(
+      (e) => e.device_id === "job-1" && e.original_name === "Target",
+    ).entity_id;
+
+    assert.ok(entityIdsIn(buildSections("jobs", data, {})).includes(target));
+  });
+}
+
+test("the Security view is named", () => {
+  const view = buildView("security", registries(), {});
+
+  assert.equal(view.title, "Security");
+  assert.equal(view.path, "security");
+  assert.equal(view.icon, "mdi:shield-lock");
+});
+
+test("the Security section opens with a banner per problem, shown only while it is on", () => {
+  const section = buildSections("security", newRegistries(), {})[0];
+  const [first, malware, practices] = section.cards;
+  const malwareId = "binary_sensor.vbr_security_vbr01_malware_detected";
+  const practicesId = "binary_sensor.vbr_security_vbr01_best_practices";
+
+  assert.equal(first.type, "heading");
+  assert.equal(malware.type, "markdown");
+  assert.match(malware.content, /alert-type="error"/);
+  assert.ok(malware.content.includes(`state_attr('${malwareId}', 'infected')`));
+  assert.deepEqual(malware.visibility, [{ condition: "state", entity: malwareId, state: "on" }]);
+
+  assert.equal(practices.type, "markdown");
+  assert.match(practices.content, /alert-type="warning"/);
+  assert.ok(practices.content.includes(`state_attr('${practicesId}', 'violating')`));
+  assert.deepEqual(practices.visibility, [
+    { condition: "state", entity: practicesId, state: "on" },
+  ]);
+});
+
+test("the problem sensors are plain tiles, left for Home Assistant to colour live", () => {
+  // Problem reads red and OK does not — Home Assistant's own colouring for the problem device
+  // class. A colour set here would be fixed at render time.
+  const section = buildSections("security", newRegistries(), {})[0];
+  const malware = section.cards.find(
+    (c) => c.entity === "binary_sensor.vbr_security_vbr01_malware_detected",
+  );
+
+  assert.equal(malware.type, "tile");
+  assert.equal(malware.color, undefined);
+});
+
+test("the analyzer button is on the Security section, last and without a state", () => {
+  const section = buildSections("security", newRegistries(), {})[0];
+  const button = section.cards.find(
+    (c) => c.entity === "button.vbr_security_vbr01_run_security_analyzer",
+  );
+
+  assert.equal(button.hide_state, true);
+  assert.equal(section.cards.filter((c) => c.entity).at(-1), button, "controls go last");
+});
+
+test("Security entities are shown with diagnostics off", () => {
+  // The integration does not file them as diagnostics; this pins that nothing here does either
+  const sections = buildSections("security", newRegistries(), { include_diagnostics: false });
+
+  assert.equal(entityIdsIn(sections).length, 9);
+});
+
+test("Malware Detected and Best Practices become badges", () => {
+  const view = buildView("overview", newRegistries(), {});
+  const badges = view.badges.map((b) => b.entity);
+
+  assert.ok(badges.includes("binary_sensor.vbr_security_vbr01_malware_detected"));
+  assert.ok(badges.includes("binary_sensor.vbr_security_vbr01_best_practices"));
+  assert.ok(!headings(view.sections).includes("Security"), "badged, so no overview section");
+  assert.equal(
+    view.badges.find((b) => b.entity.endsWith("_malware_detected")).name,
+    "Malware Detected",
+  );
+});
+
+test("badges run server, then security, then license", () => {
+  const badges = buildView("overview", newRegistries(), {}).badges.map((b) => b.entity);
+  const at = (suffix) => badges.findIndex((id) => id.endsWith(suffix));
+
+  assert.ok(at("_health_ok") < at("_malware_detected"));
+  assert.ok(at("_best_practices") < at("_expiration_date"));
+});
+
+test("with badges off, the overview has a Security tile per server", () => {
+  const view = buildView("overview", newRegistries(), { badges: false });
+  const tiles = sectionByHeading(view.sections, "Security").cards.filter((c) => c.entity);
+
+  assert.deepEqual(
+    tiles.map((c) => [c.entity, c.name]),
+    [["binary_sensor.vbr_security_vbr01_malware_detected", "Security vbr01"]],
+  );
+});
+
+test("without detected-object support, Best Practices leads the Security tile", () => {
+  // Before API 1.3-rev2 the integration has no Malware Detected, only the analyzer and events
+  const data = newRegistries();
+  const missing = ["Malware Detected", "Infected Objects", "Suspicious Objects"];
+  data.entities = data.entities.filter((e) => !missing.includes(e.original_name));
+
+  const view = buildView("overview", data, { badges: false });
+  const tile = sectionByHeading(view.sections, "Security").cards.find((c) => c.entity);
+  assert.equal(tile.entity, "binary_sensor.vbr_security_vbr01_best_practices");
+
+  const section = buildSections("security", data, {})[0];
+  assert.equal(section.cards.filter((c) => c.type === "markdown").length, 1, "no malware banner");
+
+  const content = markdownIn(view.sections)[0];
+  assert.match(content, /No best practice violations/);
+  assert.doesNotMatch(content, /No malware detected/, "nothing is known about detected objects");
+});
+
+test("the headline raises malware as an error and violations as a warning", () => {
+  const content = markdownIn(buildSections("overview", newRegistries(), {}))[0];
+
+  assert.match(content, /select\('is_state', 'on'\)/, "counted live, not at render time");
+  assert.match(content, /<ha-alert alert-type="error" title="Malware detected">/);
+  assert.match(content, /<ha-alert alert-type="warning" title="Best practices not followed">/);
+  assert.match(content, /map\('state_attr', 'infected'\)/);
+  assert.match(content, /No malware detected, and no best practice violations\./);
+  assert.match(content, /Security state is unavailable/);
+});
+
+test("the security headline follows the job headline", () => {
+  const content = markdownIn(buildSections("overview", newRegistries(), {}))[0];
+
+  assert.ok(content.startsWith("{% set jobs"), "the job headline is still the heading");
+  assert.ok(content.indexOf("set jobs =") < content.indexOf("set malware ="));
+});
+
+test("security alone still makes a headline", () => {
+  const data = {
+    devices: [device("security-1", "VBR Security vbr01", "Security")],
+    entities: securityEntities("vbr_security_vbr01", "security-1"),
+  };
+
+  const content = markdownIn(buildSections("overview", data, {}))[0];
+  assert.match(content, /binary_sensor\.vbr_security_vbr01_malware_detected/);
+});
+
+test("the summary option also turns the security headline off", () => {
+  const sections = buildSections("overview", newRegistries(), { summary: false });
+
+  assert.equal(markdownIn(sections).length, 0);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Without a Security device
+// ---------------------------------------------------------------------------------------------
+
+test("without a Security device there is no Security view", () => {
+  const dashboard = buildDashboard(withoutSecurity(), {});
+
+  assert.deepEqual(
+    dashboard.views.map((v) => v.path),
+    ["overview", "jobs", "repositories", "infrastructure"],
+  );
+  assert.equal(buildView("security", withoutSecurity(), {}), null);
+});
+
+test("without a Security device the overview says nothing about security", () => {
+  const view = buildView("overview", withoutSecurity(), {});
+
+  assert.doesNotMatch(markdownIn(view.sections)[0], /malware|best practice/i);
+  assert.ok(!view.badges.some((b) => /malware|best_practices/.test(b.entity)));
+
+  const off = buildView("overview", withoutSecurity(), { badges: false });
+  assert.ok(!headings(off.sections).includes("Security"));
+});
+
+test("a Security device with every entity disabled leaves no empty section", () => {
+  const data = registries();
+  for (const e of data.entities) if (e.device_id === "security-1") e.disabled_by = "user";
+
+  assert.equal(buildView("security", data, {}), null);
+  assert.ok(!buildDashboard(data, {}).views.some((v) => v.path === "security"));
+});
+
+test("a Security device with only the analyzer shows just that", () => {
+  // An account without the role to read malware gets no malware entities at all
+  const kept = [
+    "Best Practices",
+    "Best Practice Violations",
+    "Last Analyzer Run",
+    "Run Security Analyzer",
+  ];
+  const data = {
+    devices: [device("security-1", "VBR Security vbr01", "Security")],
+    entities: securityEntities("vbr_security_vbr01", "security-1").filter((e) =>
+      kept.includes(e.original_name),
+    ),
+  };
+
+  const section = buildSections("security", data, {})[0];
+  assert.deepEqual(
+    section.cards.filter((c) => c.entity).map((c) => c.name),
+    kept,
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+// Security with several servers
+// ---------------------------------------------------------------------------------------------
+
+test("with two servers, each gets its own Security section, named once", () => {
+  // "Security vbr01 — vbr01" would say the server twice
+  assert.deepEqual(headings(buildSections("security", twoServersWithSecurity(), {})), [
+    "Security vbr01",
+    "Security vbr02",
+  ]);
+});
+
+test("with two servers, security badges say which server they describe", () => {
+  const names = buildView("overview", twoServersWithSecurity(), {}).badges.map((b) => b.name);
+
+  for (const name of [
+    "Malware Detected (vbr01)",
+    "Malware Detected (vbr02)",
+    "Best Practices (vbr01)",
+    "Best Practices (vbr02)",
+  ]) {
+    assert.ok(names.includes(name), `missing ${name} in ${JSON.stringify(names)}`);
+  }
+});
+
+test("with two servers, the headline counts both and says how many are affected", () => {
+  const content = markdownIn(buildSections("overview", twoServersWithSecurity(), {}))[0];
+
+  assert.match(content, /binary_sensor\.vbr_security_vbr01_malware_detected/);
+  assert.match(content, /binary_sensor\.vbr_security_vbr02_malware_detected/);
+  assert.match(content, /of \{\{ malware \| count \}\} servers/);
+});
+
+test("with two servers and badges off, Security tiles are not suffixed twice", () => {
+  const view = buildView("overview", twoServersWithSecurity(), { badges: false });
+  const names = sectionByHeading(view.sections, "Security")
+    .cards.filter((c) => c.entity)
+    .map((c) => c.name);
+
+  assert.deepEqual(names, ["Security vbr01", "Security vbr02"]);
+});
+
+test("with two servers, a license title does not repeat its server either", () => {
+  const titles = headings(buildSections("infrastructure", twoServersWithSecurity(), {}));
+
+  assert.ok(titles.includes("License vbr01"), `got ${JSON.stringify(titles)}`);
+  assert.ok(titles.includes("vbr02"), "the server is its own label");
+});
+
+// ---------------------------------------------------------------------------------------------
+// Server: recovery appliances and move/copy sessions
+// ---------------------------------------------------------------------------------------------
+
+test("the server section shows move/copy sessions and recovery appliances after its health", () => {
+  for (const fixture of [registries, newRegistries]) {
+    const data = fixture();
+    const connected = data.entities.find((e) => e.original_name === "Connected").entity_id;
+    const server = buildSections("infrastructure", data, {}).find((s) =>
+      s.cards.some((c) => c.entity === connected),
+    );
+
+    assert.deepEqual(
+      server.cards.filter((c) => c.entity).map((c) => c.name),
+      [
+        "Connected",
+        "Health OK",
+        "Move/Copy Sessions Awaiting Action",
+        "Recovery Appliances Connected",
+      ],
+    );
+  }
+});
+
+test("move/copy sessions awaiting action raise a banner at the top of the server section", () => {
+  const id = "sensor.vbr_server_vbr01_move_copy_sessions_awaiting_action";
+  const server = sectionByHeading(buildSections("infrastructure", newRegistries(), {}), "vbr01");
+  const banner = server.cards[1];
+
+  assert.equal(banner.type, "markdown");
+  assert.match(banner.content, /alert-type="warning"/);
+  assert.ok(banner.content.includes(`state_attr('${id}', 'sessions')`));
+  assert.match(banner.content, /veeam_br\.manage_move_copy_session/);
+  assert.deepEqual(banner.visibility, [{ condition: "numeric_state", entity: id, above: 0 }]);
+});
+
+test("move/copy sessions awaiting action reach the headline", () => {
+  const content = markdownIn(buildSections("overview", newRegistries(), {}))[0];
+
+  assert.match(content, /sensor\.vbr_server_vbr01_move_copy_sessions_awaiting_action/);
+  assert.match(content, /\{% if awaiting %\}<ha-alert alert-type="warning"/);
+});
+
+test("without the move/copy sensor there is no banner and no headline line", () => {
+  const data = newRegistries();
+  data.entities = data.entities.filter((e) => !e.entity_id.includes("move_copy"));
+
+  const infra = markdownIn(buildSections("infrastructure", data, {}));
+  assert.ok(!infra.some((content) => content.includes("move/copy")));
+  assert.doesNotMatch(markdownIn(buildSections("overview", data, {}))[0], /awaiting/);
+});
+
+test("Recovery Appliances Connected is never taken for the server's Connected", () => {
+  // Both end in _connected; only the binary sensor says whether the server answers
+  const data = newRegistries();
+  const appliances = "sensor.vbr_server_vbr01_recovery_appliances_connected";
+  data.entities = data.entities.filter(
+    (e) => e.entity_id !== "binary_sensor.vbr_server_vbr01_connected",
+  );
+
+  const badges = buildView("overview", data, {}).badges.map((b) => b.entity);
+  assert.ok(!badges.includes(appliances));
+
+  const view = buildView("overview", data, { badges: false });
+  const servers = sectionByHeading(view.sections, "Servers");
+  assert.notEqual(servers.cards.find((c) => c.entity).entity, appliances);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Job target
+// ---------------------------------------------------------------------------------------------
+
+test("a job's Target is shown although the integration files it as a diagnostic", () => {
+  const section = sectionByHeading(buildSections("jobs", registries(), {}), "Nightly VMs");
+  const ids = section.cards.filter((c) => c.entity).map((c) => c.entity);
+
+  assert.equal(ids[2], "sensor.nightly_vms_target", "after Status and Last Result");
+  assert.ok(!ids.includes("sensor.nightly_vms_type"), "other diagnostics stay out");
+});
+
+test("a job's Target sits with its states even with diagnostics on", () => {
+  const section = sectionByHeading(
+    buildSections("jobs", registries(), { include_diagnostics: true }),
+    "Nightly VMs",
+  );
+  const ids = section.cards.filter((c) => c.entity).map((c) => c.entity);
+
+  assert.ok(ids.indexOf("sensor.nightly_vms_target") < ids.indexOf("button.nightly_vms_start"));
+});
+
+test("a job's Target never stands in for its state on the overview", () => {
+  // With no Last Result or Status shown, Target would otherwise become the job's one tile
+  const data = registries();
+  data.entities = data.entities.filter((e) => e.entity_id !== "sensor.weekly_files_last_result");
+
+  const ids = entityIdsIn(buildSections("overview", data, {}));
+  assert.ok(!ids.some((id) => id.endsWith("_target")), `got ${JSON.stringify(ids)}`);
 });
