@@ -17,8 +17,8 @@
  *
  * Options (all optional):
  *   group                 Only for the view strategy: overview | jobs | repositories |
- *                         infrastructure (which covers the HA cluster, proxies, WAN
- *                         accelerators, servers and licensing). Defaults to overview.
+ *                         security | infrastructure (which covers the HA cluster, proxies,
+ *                         WAN accelerators, servers and licensing). Defaults to overview.
  *   title, icon, path     Name the generated view. A view strategy has to supply these
  *   theme, background     itself: Home Assistant applies the generated config over the view's
  *   subview, visible      own keys, so a title set beside `strategy:` is ignored, and renaming
@@ -27,14 +27,15 @@
  *   view                   Any other view setting, passed through verbatim:
  *                            view:
  *                              theme: my-theme
- *   summary               Live headline counting failed jobs and full repositories.
- *                         Default true.
- *   badges                Server, cluster and license state as badges along the top of the
- *                         overview instead of tiles. Default true.
+ *   summary               Live headline counting failed jobs and full repositories, and
+ *                         raising malware, best practice violations and move/copy sessions
+ *                         awaiting action. Default true.
+ *   badges                Server, cluster, security and license state as badges along the top
+ *                         of the overview instead of tiles. Default true.
  *   columns               Maximum section columns. Default 3.
  *   include_diagnostics   Include diagnostic entities. Default false, since they are mostly
- *                         build numbers and IDs. The server's Connected and Health OK are
- *                         shown regardless.
+ *                         build numbers and IDs. The server's Connected and Health OK, and
+ *                         a job's Target, are shown regardless.
  *   include_config        Include config-category entities. Default true — the job start and
  *                         stop buttons live here.
  *   include_hidden        Include entities the user hid. Default false: hiding something and
@@ -54,6 +55,7 @@ const MODEL = {
   SERVER: "Backup & Replication Server",
   LICENSE: "License",
   CLUSTER: "High Availability Cluster",
+  SECURITY: "Security",
 };
 
 /** Section heading and icon per model, in the order they should appear. */
@@ -63,6 +65,7 @@ const MODEL_DISPLAY = [
   [MODEL.SOBR, "Scale-out repositories", "mdi:database-plus"],
   [MODEL.PROXY, "Backup proxies", "mdi:server-network"],
   [MODEL.WAN, "WAN accelerators", "mdi:speedometer"],
+  [MODEL.SECURITY, "Security", "mdi:shield-lock"],
   [MODEL.CLUSTER, "High availability", "mdi:server-security"],
   [MODEL.SERVER, "Servers", "mdi:server"],
   [MODEL.LICENSE, "Licensing", "mdi:certificate"],
@@ -82,26 +85,28 @@ const MODEL_KIND = {
   [MODEL.SERVER]: "Server",
   [MODEL.LICENSE]: "License",
   [MODEL.CLUSTER]: "HA Cluster",
+  [MODEL.SECURITY]: "Security",
 };
 
 const DEVICE_NAME_PREFIX = "VBR ";
 
 /** Models whose name is the server's, so without the kind it would be mistaken for the server. */
-const KEEP_KIND = new Set([MODEL.LICENSE, MODEL.CLUSTER]);
+const KEEP_KIND = new Set([MODEL.LICENSE, MODEL.CLUSTER, MODEL.SECURITY]);
 
 const MODEL_ICON = new Map(MODEL_DISPLAY.map(([model, , icon]) => [model, icon]));
 const MODEL_TITLE = new Map(MODEL_DISPLAY.map(([model, title]) => [model, title]));
 const MODEL_ORDER = MODEL_DISPLAY.map(([model]) => model);
 
 /** Models whose state belongs in the overview badges rather than in a section of its own. */
-const PLATFORM_MODELS = [MODEL.CLUSTER, MODEL.SERVER, MODEL.LICENSE];
+const PLATFORM_MODELS = [MODEL.CLUSTER, MODEL.SERVER, MODEL.SECURITY, MODEL.LICENSE];
 
-const GROUPS = ["overview", "jobs", "repositories", "infrastructure"];
+const GROUPS = ["overview", "jobs", "repositories", "security", "infrastructure"];
 
 const GROUP_VIEW = {
   overview: { title: "Overview", path: "overview", icon: "mdi:backup-restore" },
   jobs: { title: "Jobs", path: "jobs", icon: "mdi:file-tree" },
   repositories: { title: "Repositories", path: "repositories", icon: "mdi:database" },
+  security: { title: "Security", path: "security", icon: "mdi:shield-lock" },
   infrastructure: { title: "Infrastructure", path: "infrastructure", icon: "mdi:server" },
 };
 
@@ -120,6 +125,9 @@ const DEFAULTS = {
  *
  * The overview shows exactly one tile per device, named for the device — several tiles from one
  * device all carrying the device name is what made it unreadable. First match wins.
+ *
+ * A suffix may name its domain, as "binary_sensor._connected": the server's Recovery Appliances
+ * Connected sensor ends in "_connected" too, and says nothing about whether the server answers.
  */
 const PRIMARY_SUFFIXES = {
   // Status reports what a job is doing and never reports failure, so Last Result leads
@@ -128,35 +136,57 @@ const PRIMARY_SUFFIXES = {
   [MODEL.SOBR]: ["_extent_count", "_description"],
   [MODEL.PROXY]: ["_online", "_enabled"],
   [MODEL.WAN]: ["_cache_size"],
-  [MODEL.SERVER]: ["_connected", "_name"],
+  [MODEL.SERVER]: ["binary_sensor._connected", "_name"],
   [MODEL.LICENSE]: ["_status", "_expiration_date"],
   [MODEL.CLUSTER]: ["_online", "_failover_in_progress"],
+  // Detected objects need API 1.3-rev2 while the analyzer is in every revision, so a server can
+  // have Best Practices and no Malware Detected
+  [MODEL.SECURITY]: [
+    "binary_sensor._malware_detected",
+    "binary_sensor._best_practices",
+    "_best_practice_violations",
+    "_malware_events_24h",
+  ],
 };
 
 /** Entities promoted to badges, most important first. */
 const BADGE_SUFFIXES = {
   [MODEL.CLUSTER]: ["_online", "_failover_in_progress"],
-  [MODEL.SERVER]: ["_connected", "_health_ok"],
+  [MODEL.SERVER]: ["binary_sensor._connected", "_health_ok"],
+  [MODEL.SECURITY]: ["binary_sensor._malware_detected", "binary_sensor._best_practices"],
   [MODEL.LICENSE]: ["_status", "_expiration_date"],
 };
 
 /**
- * Diagnostic entities shown even with include_diagnostics off.
+ * Diagnostic entities shown even with include_diagnostics off, and placed among the states.
  *
- * The integration files every server entity under diagnostics, Connected and Health OK
+ * The integration files nearly every server entity under diagnostics, Connected and Health OK
  * included — but whether the server answers is the first thing anyone wants to know, and
- * without them the server device has nothing on the dashboard at all.
+ * without them the server device has nothing on the dashboard at all. A job's Target is filed
+ * there too, but where a job writes to is what tells two similar jobs apart, not a build number.
  */
 const ALWAYS_SHOWN_SUFFIXES = {
-  [MODEL.SERVER]: ["_connected", "_health_ok"],
+  [MODEL.SERVER]: ["binary_sensor._connected", "_health_ok"],
+  [MODEL.JOB]: ["_target"],
 };
 
 /** Within a device section, states read best in this order. */
 const ENTITY_ORDER = [
   "_status",
   "_last_result",
-  "_connected",
+  "_target",
+  "binary_sensor._connected",
   "_health_ok",
+  "_move_copy_sessions_awaiting_action",
+  "_recovery_appliances_connected",
+  "_malware_detected",
+  "_best_practices",
+  "_infected_objects",
+  "_suspicious_objects",
+  "_best_practice_violations",
+  "_malware_events_24h",
+  "_last_malware_event",
+  "_last_analyzer_run",
   "_online",
   "_enabled",
   "_out_of_date",
@@ -230,9 +260,14 @@ function objectIdStems(entity) {
  * Entity IDs come in two schemes: an install from before device names were prefixed keeps
  * sensor.nightly_vms_last_result in the registry, a new one gets
  * sensor.vbr_job_nightly_vms_last_result. Both end the same way. The entity's own name is
- * checked too, so a user who renamed the entity ID does not lose the tile.
+ * checked too, so a user who renamed the entity ID does not lose the tile. A suffix written as
+ * "binary_sensor._connected" matches only in that domain.
  */
-function hasSuffix(entity, suffix) {
+function hasSuffix(entity, qualified) {
+  const dot = qualified.indexOf(".");
+  if (dot !== -1 && !(entity.entity_id || "").startsWith(qualified.slice(0, dot + 1))) return false;
+  const suffix = dot === -1 ? qualified : qualified.slice(dot + 1);
+
   if (objectIdStems(entity).some((stem) => stem.endsWith(suffix))) return true;
   const own = slugify(entity.original_name);
   return own ? `_${own}`.endsWith(suffix) : false;
@@ -268,6 +303,18 @@ function entityName(entity, device) {
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+/**
+ * Entities that describe a device rather than say how it is doing.
+ *
+ * A job's Target on the overview, standing in for a Last Result that is not shown, would read
+ * as the job's state — "Local VM and Media Backups" in place of Success or Failed.
+ */
+const CONTEXT_SUFFIXES = ["_target"];
+
+function isContext(entity) {
+  return CONTEXT_SUFFIXES.some((suffix) => hasSuffix(entity, suffix));
 }
 
 function isButton(entity) {
@@ -309,11 +356,12 @@ function entitiesByDevice(entities, devices, opts) {
   }
 
   // States first, in reading order, then buttons, then diagnostics — so a card leads with what
-  // someone opened the dashboard to see and the controls sit together at the end
+  // someone opened the dashboard to see and the controls sit together at the end. A diagnostic
+  // shown regardless is shown because it matters, so it sits with the states.
   for (const list of byDevice.values()) {
     list.sort((a, b) => {
       const category = (entity) => {
-        if (entity.entity_category === "diagnostic") return 2;
+        if (entity.entity_category === "diagnostic" && !alwaysShown(entity)) return 2;
         if (isButton(entity)) return 1;
         return 0;
       };
@@ -366,6 +414,19 @@ function entryLabels(devices) {
 
 function entryOf(device) {
   return (device.config_entries || [])[0];
+}
+
+/**
+ * The server label a title needs with several servers, or null.
+ *
+ * A license or a Security device is named after its server already — "License vbr01" — and
+ * "License vbr01 — vbr01" says it twice.
+ */
+function serverLabel(device, labels, multiServer) {
+  if (!multiServer) return null;
+  const label = labels.get(entryOf(device));
+  if (!label || deviceName(device).endsWith(label)) return null;
+  return label;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -473,6 +534,60 @@ function repositorySummary(entityIds, warnAt) {
   ].join("\n");
 }
 
+/**
+ * Malware and best practice violations, raised as banners when there are any.
+ *
+ * Counted from the problem sensors the Security tiles and badges show, so the headline cannot
+ * disagree with them; the object counts come from Malware Detected's own attributes. A server
+ * without detected-object support (before API 1.3-rev2) simply has no Malware Detected, and the
+ * sentence then says only what is known.
+ */
+function securitySummary(malwareIds, practiceIds) {
+  const lines = [
+    `{% set malware = ${jinjaList(malwareIds)} %}`,
+    `{% set practices = ${jinjaList(practiceIds)} %}`,
+    "{% set infected_on = malware | select('is_state', 'on') | list %}",
+    "{% set violating_on = practices | select('is_state', 'on') | list %}",
+    "{% set infected = infected_on | map('state_attr', 'infected') | map('int', 0) | sum %}",
+    "{% set suspicious = infected_on | map('state_attr', 'suspicious') | map('int', 0) | sum %}",
+    "{% set lost = (malware + practices) | map('states') " +
+      "| select('in', ['unavailable', 'unknown']) | list | count %}",
+    "{% if infected_on %}" +
+      '<ha-alert alert-type="error" title="Malware detected">' +
+      "{{ infected }} infected and {{ suspicious }} suspicious " +
+      "object{{ '' if infected + suspicious == 1 else 's' }}" +
+      "{% if malware | count > 1 %} on {{ infected_on | count }} of {{ malware | count }} " +
+      "servers{% endif %}. See the Security view.</ha-alert>" +
+      "{% endif %}",
+    "{% if violating_on %}" +
+      '<ha-alert alert-type="warning" title="Best practices not followed">' +
+      "The Security & Compliance Analyzer reports violations" +
+      "{% if practices | count > 1 %} on {{ violating_on | count }} of " +
+      "{{ practices | count }} servers{% endif %}.</ha-alert>" +
+      "{% endif %}",
+    "{% if not infected_on and not violating_on and not lost %}" +
+      (malwareIds.length ? "No malware detected" : "") +
+      (malwareIds.length && practiceIds.length ? ", and no" : practiceIds.length ? "No" : "") +
+      (practiceIds.length ? " best practice violations" : "") +
+      ".{% elif lost %}Security state is unavailable for {{ lost }} " +
+      "sensor{{ '' if lost == 1 else 's' }}.{% endif %}",
+  ];
+  return lines.join("\n");
+}
+
+/** Backup moves and copies stopped part-way, which wait for someone to decide. */
+function moveCopySummary(entityIds) {
+  return [
+    `{% set awaiting = ${jinjaList(entityIds)} | map('states') | map('int', 0) | sum %}`,
+    "{% if awaiting %}" +
+      '<ha-alert alert-type="warning" title="Move/copy sessions awaiting action">' +
+      "{{ awaiting }} backup move/copy session{{ '' if awaiting == 1 else 's' }} " +
+      "{{ 'is' if awaiting == 1 else 'are' }} waiting for a decision. " +
+      "See the server on the Infrastructure view.</ha-alert>" +
+      "{% endif %}",
+  ].join("\n");
+}
+
 function summarySection(groups, byDevice, opts, columns) {
   // The same entity the tiles use, so the headline can never disagree with what is below it.
   // Which one that is depends on the options: Last Result is a diagnostic entity, so with
@@ -486,10 +601,15 @@ function summarySection(groups, byDevice, opts, columns) {
 
   const jobs = collect(MODEL.JOB, PRIMARY_SUFFIXES[MODEL.JOB]);
   const repositories = collect(MODEL.REPOSITORY, ["_used_percentage"]);
+  const malware = collect(MODEL.SECURITY, ["binary_sensor._malware_detected"]);
+  const practices = collect(MODEL.SECURITY, ["binary_sensor._best_practices"]);
+  const moveCopy = collect(MODEL.SERVER, ["sensor._move_copy_sessions_awaiting_action"]);
 
   const parts = [];
   if (jobs.length) parts.push(jobSummary(jobs));
   if (repositories.length) parts.push(repositorySummary(repositories, opts.repository_warn_at));
+  if (malware.length || practices.length) parts.push(securitySummary(malware, practices));
+  if (moveCopy.length) parts.push(moveCopySummary(moveCopy));
   if (!parts.length) return null;
 
   return section([markdown(parts.join("\n\n"))], { column_span: columns });
@@ -503,7 +623,7 @@ function summarySection(groups, byDevice, opts, columns) {
 function deviceSections(devices, byDevice, labels, multiServer, opts) {
   return devices.map((device) => {
     const entities = byDevice.get(device.id) || [];
-    const label = multiServer ? labels.get(entryOf(device)) : null;
+    const label = serverLabel(device, labels, multiServer);
     const title = label ? `${deviceName(device)} — ${label}` : deviceName(device);
 
     const cards = entities.map((entity) => {
@@ -528,11 +648,86 @@ function deviceSections(devices, byDevice, labels, multiServer, opts) {
     const rest = cards.filter((card) => card.type !== "gauge");
 
     return titledSection(title, MODEL_ICON.get(device.model), [
+      ...alertNotes(entities),
       ...gauges,
       ...rest,
       ...failedEndpointsNote(entities),
     ]);
   });
+}
+
+/** The first entity in one domain whose ID or name ends in a suffix. */
+function findIn(entities, domain, suffix) {
+  return entities.find(
+    (entity) => entity.entity_id.startsWith(`${domain}.`) && hasSuffix(entity, suffix),
+  );
+}
+
+/**
+ * Banners at the top of a section, each shown only while there is something to act on.
+ *
+ * Malware Detected and Best Practices are problem sensors, and their tiles already read
+ * Problem or OK; the banner says what the problem is, from the attributes the integration puts
+ * on them. The visibility conditions are evaluated live, so nothing here is fixed at render
+ * time — which is also why they are banners rather than a tile coloured when generated.
+ */
+function alertNotes(entities) {
+  const notes = [];
+
+  const malware = findIn(entities, "binary_sensor", "_malware_detected");
+  if (malware) {
+    const id = malware.entity_id;
+    notes.push(
+      markdown(
+        `{% set infected = state_attr('${id}', 'infected') | int(0) %}` +
+          `{% set suspicious = state_attr('${id}', 'suspicious') | int(0) %}` +
+          `{% set objects = state_attr('${id}', 'objects') or [] %}` +
+          '<ha-alert alert-type="error" title="Malware detected">' +
+          "{{ infected }} infected and {{ suspicious }} suspicious " +
+          "object{{ '' if infected + suspicious == 1 else 's' }}" +
+          "{% if objects %}, most recently " +
+          "{{ objects[:5] | map(attribute='name') | select | join(', ') }}{% endif %}." +
+          "</ha-alert>",
+        { visibility: [{ condition: "state", entity: id, state: "on" }] },
+      ),
+    );
+  }
+
+  const practices = findIn(entities, "binary_sensor", "_best_practices");
+  if (practices) {
+    const id = practices.entity_id;
+    notes.push(
+      markdown(
+        `{% set violating = state_attr('${id}', 'violating') or [] %}` +
+          '<ha-alert alert-type="warning" title="Best practices not followed">' +
+          "{% if violating %}{{ violating | join(', ') }}" +
+          "{% else %}The Security & Compliance Analyzer reports a violation.{% endif %}" +
+          "</ha-alert>",
+        { visibility: [{ condition: "state", entity: id, state: "on" }] },
+      ),
+    );
+  }
+
+  const moveCopy = findIn(entities, "sensor", "_move_copy_sessions_awaiting_action");
+  if (moveCopy) {
+    const id = moveCopy.entity_id;
+    notes.push(
+      markdown(
+        `{% set count = states('${id}') | int(0) %}` +
+          `{% set sessions = state_attr('${id}', 'sessions') or [] %}` +
+          '<ha-alert alert-type="warning" ' +
+          "title=\"{{ count }} move/copy session{{ '' if count == 1 else 's' }} awaiting action\">" +
+          "{% for s in sessions[:5] %}{{ s.name or s.job_name or s.id }}" +
+          "{{ ', ' if not loop.last else '' }}{% endfor %}" +
+          "{% if sessions %} — {% endif %}" +
+          "Settle with the <code>veeam_br.manage_move_copy_session</code> action." +
+          "</ha-alert>",
+        { visibility: [{ condition: "numeric_state", entity: id, above: 0 }] },
+      ),
+    );
+  }
+
+  return notes;
 }
 
 /**
@@ -581,10 +776,10 @@ function overviewSections(groups, byDevice, labels, multiServer, opts, columns) 
       const entities = byDevice.get(device.id) || [];
       const primary =
         findBySuffixes(entities, PRIMARY_SUFFIXES[model]) ||
-        entities.find((entity) => !isButton(entity));
+        entities.find((entity) => !isButton(entity) && !isContext(entity));
       if (!primary) continue;
 
-      const label = multiServer ? labels.get(entryOf(device)) : null;
+      const label = serverLabel(device, labels, multiServer);
       cards.push(
         tile(primary.entity_id, {
           name: label ? `${deviceName(device)} (${label})` : deviceName(device),
@@ -679,6 +874,10 @@ export function buildSections(group, registries, config) {
       return sectionsFor([MODEL.JOB]);
     case "repositories":
       return sectionsFor([MODEL.REPOSITORY, MODEL.SOBR]);
+    case "security":
+      // A server whose API version or account has none of it has no Security device, and so
+      // no section — and with no section anywhere, no Security view either
+      return sectionsFor([MODEL.SECURITY]);
     case "infrastructure":
       return sectionsFor([MODEL.CLUSTER, MODEL.PROXY, MODEL.WAN, MODEL.SERVER, MODEL.LICENSE]);
     case "overview":
