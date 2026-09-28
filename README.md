@@ -178,6 +178,26 @@ Working from the registry rather than matching entity IDs means renaming an enti
 does not break the dashboard, and disabled entities are never given a tile that would render
 broken.
 
+### Device names and entity IDs
+
+The integration names its devices `VBR <kind> <name>` — *VBR Job Nightly VMs*, *VBR Server
+vbr01*, *VBR Default Backup Repository* (the kind is left out when the name already has it).
+Section and tile titles drop that lead-in, so under *Backup jobs* you read *Nightly VMs*. A
+license and an HA cluster keep their kind (*License vbr01*), since they are named after the
+server, and a name you give a device yourself is shown exactly as you wrote it.
+
+Within a device, the strategy recognises an entity by the end of its ID or by its own name, so
+both ID schemes work:
+
+| Install | Example |
+| ------- | ------- |
+| Set up before device names were prefixed | `sensor.nightly_vms_last_result` |
+| Set up since | `sensor.vbr_job_nightly_vms_last_result` |
+
+Home Assistant keeps an existing entity's ID when its device is renamed, so upgrading the
+integration changes nothing here. A `_2` or `_3` that Home Assistant appended to resolve a
+clash — with the Veeam Backup for Microsoft 365 integration, say — is ignored too.
+
 A few deliberate choices in the layout:
 
 - **One tile per device on the overview**, named for the device — a proxy contributing three
@@ -191,7 +211,13 @@ A few deliberate choices in the layout:
 - **Used space is a gauge**, coloured at `repository_warn_at`. A tile reading *0.2%* is a number
   you have to think about; a gauge is not.
 - **Server, cluster and licence state are badges**, because they are one-per-server facts that
-  belong along the top rather than in a section competing with your jobs.
+  belong along the top rather than in a section competing with your jobs. The server's
+  *Connected* and *Health OK* are shown even with `include_diagnostics` off, although the
+  integration files them as diagnostics — otherwise the server would not appear at all.
+- **Failing endpoints are spelled out.** While *Health OK* is off, the server's section lists
+  the endpoints that failed, from its `failed_endpoints` attribute. An entity whose endpoint
+  failed goes unavailable rather than showing stale data, and the headline counts unavailable
+  jobs and repositories instead of calling them healthy.
 - **The headline is a template**, not a count baked in at render time. A strategy runs once per
   page load, so anything computed from live states would be a stale snapshot minutes later —
   that also applies to card order and colour, which is why neither depends on state.
@@ -206,7 +232,8 @@ node --test        # or: npm test
 ```
 
 The tests import the module directly and feed it registry fixtures, asserting on the generated
-dashboard configuration — grouping, filtering, multi-server labelling and the empty state.
+dashboard configuration — grouping, filtering, multi-server labelling, both entity ID schemes
+and the empty state.
 
 ## Related
 
